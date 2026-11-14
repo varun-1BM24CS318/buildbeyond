@@ -12,6 +12,10 @@
 
 # testing
 /coverage
+.hypothesis/
+.pytest_cache/
+*/.hypothesis/
+*/.pytest_cache/
 
 # next.js
 /.next/
