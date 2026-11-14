@@ -2,15 +2,6 @@
 
 import React, { useState } from "react";
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
-import {
   ShieldCheck,
   ShieldAlert,
   Zap,
@@ -24,38 +15,18 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { FullSimulationState } from "@/lib/types";
+import { DispatchTrajectoryChart, AGENT_COLORS } from "./DispatchTrajectoryChart";
 
 interface CommandCenterTabProps {
   state: FullSimulationState;
   onToggleCheater: (agentId: string, isCheater: boolean) => void;
 }
 
-const AGENT_COLORS: Record<string, string> = {
-  hospital: "#F2555A",
-  water: "#6EA8FF",
-  emergency: "#F5A524",
-  telecom: "#B388FF",
-  residential: "#5F6670",
-};
-
 export const CommandCenterTab: React.FC<CommandCenterTabProps> = ({
   state,
   onToggleCheater,
 }) => {
-  const [scaleMode, setScaleMode] = useState<"mw" | "percent">("mw");
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
-
-  const historyData = state.history.map((h) => {
-    return {
-      step: `S${h.step}`,
-      hospital: scaleMode === "mw" ? h.allocations?.hospital ?? 5 : Math.round(((h.allocations?.hospital ?? 5) / (h.demands?.hospital || 5)) * 100),
-      water: scaleMode === "mw" ? h.allocations?.water ?? 4 : Math.round(((h.allocations?.water ?? 4) / (h.demands?.water || 4)) * 100),
-      emergency: scaleMode === "mw" ? h.allocations?.emergency ?? 3 : Math.round(((h.allocations?.emergency ?? 3) / (h.demands?.emergency || 3)) * 100),
-      telecom: scaleMode === "mw" ? h.allocations?.telecom ?? 2.5 : Math.round(((h.allocations?.telecom ?? 2.5) / (h.demands?.telecom || 2.5)) * 100),
-      residential: scaleMode === "mw" ? h.allocations?.residential ?? 10 : Math.round(((h.allocations?.residential ?? 10) / (h.demands?.residential || 20.5)) * 100),
-      supply: h.supply_mw,
-    };
-  });
 
   return (
     <div className="space-y-6 text-[#EDEEF0]">
@@ -149,94 +120,7 @@ export const CommandCenterTab: React.FC<CommandCenterTabProps> = ({
       </div>
 
       {/* Row 2: Dispatch Chart */}
-      <div className="linear-card p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 pb-3 border-b border-[rgba(255,255,255,0.07)]">
-          <div>
-            <h3 className="font-semibold text-sm text-[#EDEEF0]">
-              Continuous Multi-Sector Dispatch Trajectory
-            </h3>
-            <p className="text-xs text-[#9BA1AA] mt-0.5">
-              SciPy HiGHS 3-stage optimization trajectory over 24 discrete crisis steps
-            </p>
-          </div>
-
-          <div className="flex items-center bg-[#14171B] border border-[rgba(255,255,255,0.07)] rounded-lg p-0.5 text-xs">
-            <button
-              onClick={() => setScaleMode("mw")}
-              className={`px-2.5 py-1 rounded transition text-xs font-mono ${
-                scaleMode === "mw"
-                  ? "bg-[#0E1013] text-[#EDEEF0] font-semibold"
-                  : "text-[#5F6670] hover:text-[#9BA1AA]"
-              }`}
-            >
-              Absolute MW
-            </button>
-            <button
-              onClick={() => setScaleMode("percent")}
-              className={`px-2.5 py-1 rounded transition text-xs font-mono ${
-                scaleMode === "percent"
-                  ? "bg-[#0E1013] text-[#EDEEF0] font-semibold"
-                  : "text-[#5F6670] hover:text-[#9BA1AA]"
-              }`}
-            >
-              % Demand Met
-            </button>
-          </div>
-        </div>
-
-        <div className="h-[280px] w-full min-w-0">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
-            <AreaChart data={historyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-              <XAxis dataKey="step" tickLine={false} axisLine={false} tick={{ fill: "#5F6670", fontSize: 11 }} />
-              <YAxis
-                tickLine={false}
-                axisLine={false}
-                tick={{ fill: "#5F6670", fontSize: 11 }}
-                domain={scaleMode === "mw" ? [0, 40] : [0, 100]}
-                tickFormatter={(v) => (scaleMode === "mw" ? `${v}M` : `${v}%`)}
-              />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (active && payload && payload.length) {
-                    return (
-                      <div className="bg-[#0E1013] border border-[rgba(255,255,255,0.1)] rounded-lg p-3 shadow-xl text-xs font-mono space-y-1">
-                        <div className="text-[#9BA1AA] font-bold border-b border-[rgba(255,255,255,0.07)] pb-1 mb-1">
-                          {label}
-                        </div>
-                        {payload.map((p, idx) => (
-                          <div key={idx} className="flex justify-between gap-4">
-                            <span style={{ color: p.color }}>{p.name}:</span>
-                            <span className="text-[#EDEEF0] font-bold">
-                              {p.value} {scaleMode === "mw" ? "MW" : "%"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              <Area type="monotone" dataKey="hospital" name="Hospital" stroke="#F2555A" strokeWidth={1.5} fill="#F2555A" fillOpacity={0.06} />
-              <Area type="monotone" dataKey="water" name="Water Treatment" stroke="#6EA8FF" strokeWidth={1.5} fill="#6EA8FF" fillOpacity={0.06} />
-              <Area type="monotone" dataKey="emergency" name="First Responders" stroke="#F5A524" strokeWidth={1.5} fill="#F5A524" fillOpacity={0.06} />
-              <Area type="monotone" dataKey="telecom" name="Telecom Dispatch" stroke="#B388FF" strokeWidth={1.5} fill="#B388FF" fillOpacity={0.06} />
-              <Area type="monotone" dataKey="residential" name="Residential" stroke="#5F6670" strokeWidth={1.5} fill="#5F6670" fillOpacity={0.06} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Legend */}
-        <div className="flex flex-wrap items-center gap-4 mt-4 pt-3 border-t border-[rgba(255,255,255,0.07)] text-xs">
-          {Object.entries(AGENT_COLORS).map(([k, col]) => (
-            <div key={k} className="flex items-center gap-1.5 font-mono text-[11px] text-[#9BA1AA]">
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: col }} />
-              <span className="capitalize">{k}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      <DispatchTrajectoryChart state={state} />
 
       {/* Row 3: Agent Cards (5-column grid) */}
       <div>
