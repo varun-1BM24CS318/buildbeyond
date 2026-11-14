@@ -325,12 +325,12 @@ function playbackReducer(state: PlaybackState, action: PlaybackAction): Playback
     case "NEXT": {
       const nextCursor = state.cursor + 1;
       if (nextCursor >= action.totalEvents) {
-        return { ...state, isPlaying: false, cursor: action.totalEvents - 1 };
+        return { ...state, cursor: action.totalEvents - 1 };
       }
       return { ...state, cursor: nextCursor };
     }
     case "PREV":
-      return { ...state, isPlaying: false, cursor: Math.max(0, state.cursor - 1) };
+      return { ...state, cursor: Math.max(0, state.cursor - 1) };
     case "SEEK":
       return {
         ...state,
@@ -387,7 +387,7 @@ export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
   // Playback Reducer
   const [playback, dispatch] = useReducer(playbackReducer, {
     cursor: 0,
-    isPlaying: false,
+    isPlaying: globalPlaying ?? false,
     speed: speed,
   });
 
@@ -396,23 +396,67 @@ export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
     dispatch({ type: "SET_SPEED", speed });
   }, [speed]);
 
-  // Reset playback cursor on scenario change or manual reset
+  // Synchronize global isPlaying from App Header
   useEffect(() => {
-    dispatch({ type: "RESET" });
-  }, [state.scenario, state.step]);
+    if (globalPlaying !== undefined) {
+      if (globalPlaying && !playback.isPlaying) {
+        dispatch({ type: "PLAY" });
+      } else if (!globalPlaying && playback.isPlaying) {
+        dispatch({ type: "PAUSE" });
+      }
+    }
+  }, [globalPlaying]);
 
-  // Single Timer Chain Loop (requestAnimationFrame / setTimeout cleaned up on pause, unmount, change)
+  // Handle scenario change: full reset & pause
+  const prevScenarioRef = useRef(state.scenario);
+  useEffect(() => {
+    if (prevScenarioRef.current !== state.scenario) {
+      prevScenarioRef.current = state.scenario;
+      dispatch({ type: "RESET" });
+      setGlobalPlaying?.(false);
+    }
+  }, [state.scenario, setGlobalPlaying]);
+
+  // Handle step change (e.g. manual step button in header): seek to 0 of new hour without forcing pause
+  const prevStepRef = useRef(state.step);
+  useEffect(() => {
+    if (prevStepRef.current !== state.step) {
+      prevStepRef.current = state.step;
+      dispatch({ type: "SEEK", index: 0, totalEvents: events.length });
+    }
+  }, [state.step, events.length]);
+
+  // Single Timer Chain Loop (steps through round events, then seamlessly advances simulation hour)
   useEffect(() => {
     if (!playback.isPlaying) return;
 
-    // Minimum stage visible duration ~1200ms divided by speed
+    // Minimum stage visible duration ~1100ms divided by speed
     const delay = Math.max(250, Math.round(1100 / playback.speed));
     const timer = setTimeout(() => {
-      dispatch({ type: "NEXT", totalEvents: events.length });
+      if (playback.cursor < events.length - 1) {
+        dispatch({ type: "NEXT", totalEvents: events.length });
+      } else {
+        // Reached end of rounds for current hour
+        if (state.step < state.total_steps) {
+          onStep?.(1);
+          dispatch({ type: "SEEK", index: 0, totalEvents: events.length });
+        } else {
+          // Simulation complete
+          dispatch({ type: "PAUSE" });
+          setGlobalPlaying?.(false);
+        }
+      }
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [playback.isPlaying, playback.cursor, playback.speed, events.length]);
+  }, [playback.isPlaying, playback.cursor, playback.speed, events.length, state.step, state.total_steps, onStep, setGlobalPlaying]);
+
+  // Toggle playback locally and sync to global header
+  const handleTogglePlayback = useCallback(() => {
+    const nextState = !playback.isPlaying;
+    dispatch({ type: nextState ? "PLAY" : "PAUSE" });
+    setGlobalPlaying?.(nextState);
+  }, [playback.isPlaying, setGlobalPlaying]);
 
   // Current event and derived metrics
   const currentEvent = events[playback.cursor] ?? events[0];
@@ -493,7 +537,7 @@ export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
 
       if (e.code === "Space") {
         e.preventDefault();
-        dispatch({ type: "TOGGLE" });
+        handleTogglePlayback();
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
         dispatch({ type: "NEXT", totalEvents: events.length });
@@ -1042,7 +1086,7 @@ export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
             {/* Play/Pause Floor & Scrubber Buttons */}
             <div className="flex items-center gap-2">
               <button
-                onClick={() => dispatch({ type: "TOGGLE" })}
+                onClick={handleTogglePlayback}
                 className={`px-3 py-1.5 rounded flex items-center gap-1.5 transition text-xs font-semibold ${
                   playback.isPlaying
                     ? "bg-[#6EA8FF]/20 text-[#6EA8FF] border border-[#6EA8FF]/40"

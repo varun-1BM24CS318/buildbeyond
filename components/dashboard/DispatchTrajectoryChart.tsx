@@ -81,17 +81,8 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
     return map;
   }, [state.history]);
 
-  // Max scale for absolute MW view (fixed 40 MW or rounded up to nominal)
-  const maxScale = useMemo(() => {
-    let highest = 35.0;
-    for (const h of state.history) {
-      if (h.supply_mw && h.supply_mw > highest) highest = h.supply_mw;
-      // Cap scale calculation at 3x nominal capacity (105 MW) so anomalies never squash the chart
-      const safeDemand = Math.min(105.0, h.total_demand || 0);
-      if (safeDemand > highest) highest = safeDemand;
-    }
-    return Math.min(105.0, Math.max(40.0, Math.ceil(highest / 10) * 10));
-  }, [state.history]);
+  // Fixed scale for absolute MW view (stable 45 MW scale prevents columns jumping across steps)
+  const FIXED_MAX_MW = 45.0;
 
   const hasDataAnomaly = useMemo(() => {
     return state.history.some((h) => (h.total_demand || 0) > 105.0);
@@ -111,19 +102,19 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
   const colWidth = Math.round(slotWidth * 0.65);
 
   const getY = useCallback(
-    (val: number, max: number = maxScale) => {
+    (val: number, max: number = FIXED_MAX_MW) => {
       const clamped = Math.max(0, Math.min(max, val));
       return paddingTop + plotHeight - (clamped / max) * plotHeight;
     },
-    [maxScale, plotHeight, paddingTop]
+    [plotHeight, paddingTop]
   );
 
   const getH = useCallback(
-    (val: number, max: number = maxScale) => {
+    (val: number, max: number = FIXED_MAX_MW) => {
       const clamped = Math.max(0, val);
       return (clamped / max) * plotHeight;
     },
-    [maxScale, plotHeight]
+    [plotHeight]
   );
 
   // Stepped supply path
@@ -134,7 +125,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
       const rec = stepMap.get(s);
       const supplyVal = rec?.supply_mw ?? state.supply_mw ?? 35.0;
       const effectiveVal = viewMode === "percent" ? 100.0 : supplyVal;
-      const yVal = getY(effectiveVal, viewMode === "percent" ? 100.0 : maxScale);
+      const yVal = getY(effectiveVal, viewMode === "percent" ? 100.0 : FIXED_MAX_MW);
       const x1 = paddingLeft + (s - 1) * slotWidth;
       const x2 = paddingLeft + s * slotWidth;
 
@@ -144,7 +135,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
         const prevRec = stepMap.get(s - 1);
         const prevSupply = prevRec?.supply_mw ?? state.supply_mw ?? 35.0;
         const prevEff = viewMode === "percent" ? 100.0 : prevSupply;
-        const prevY = getY(prevEff, viewMode === "percent" ? 100.0 : maxScale);
+        const prevY = getY(prevEff, viewMode === "percent" ? 100.0 : FIXED_MAX_MW);
         if (Math.abs(prevY - yVal) > 0.5) {
           d += ` L ${x1} ${yVal}`; // Vertical riser
         }
@@ -152,7 +143,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
       }
     }
     return d;
-  }, [state.history, stepMap, currentStep, slotWidth, paddingLeft, getY, viewMode, maxScale, state.supply_mw]);
+  }, [state.history, stepMap, currentStep, slotWidth, paddingLeft, getY, viewMode, state.supply_mw]);
 
   // Stepped demand path
   const demandPath = useMemo(() => {
@@ -161,7 +152,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
     for (let s = 1; s <= currentStep; s++) {
       const rec = stepMap.get(s);
       const demVal = rec?.total_demand ?? state.total_demand ?? 35.0;
-      const yVal = getY(demVal, maxScale);
+      const yVal = getY(demVal, FIXED_MAX_MW);
       const x1 = paddingLeft + (s - 1) * slotWidth;
       const x2 = paddingLeft + s * slotWidth;
 
@@ -170,7 +161,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
       } else {
         const prevRec = stepMap.get(s - 1);
         const prevDem = prevRec?.total_demand ?? state.total_demand ?? 35.0;
-        const prevY = getY(prevDem, maxScale);
+        const prevY = getY(prevDem, FIXED_MAX_MW);
         if (Math.abs(prevY - yVal) > 0.5) {
           d += ` L ${x1} ${yVal}`;
         }
@@ -178,7 +169,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
       }
     }
     return d;
-  }, [state.history, stepMap, currentStep, slotWidth, paddingLeft, getY, viewMode, maxScale, state.total_demand]);
+  }, [state.history, stepMap, currentStep, slotWidth, paddingLeft, getY, viewMode, state.total_demand]);
 
   // Scenario events
   const scenarioEvents = useMemo(() => {
@@ -382,8 +373,8 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
             </defs>
 
             {/* Background Gridlines at 4% Opacity */}
-            {(viewMode === "percent" ? [0, 25, 50, 75, 100] : [0, 10, 20, 30, 40]).map((tick) => {
-              const y = getY(tick, viewMode === "percent" ? 100 : maxScale);
+            {(viewMode === "percent" ? [0, 25, 50, 75, 100] : [10, 20, 30, 40]).map((tick) => {
+              const y = getY(tick, viewMode === "percent" ? 100 : FIXED_MAX_MW);
               return (
                 <g key={tick}>
                   <line
@@ -498,7 +489,9 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
               const isHovered = (pinnedStep ?? hoveredStep) === stepNum;
               const isDimmed = (pinnedStep ?? hoveredStep) !== null && !isHovered;
 
-              if (!isPastOrCurrent || !rec) {
+              const effectiveRec = rec || (isPastOrCurrent ? (stepMap.get(currentStep) || state.history[0]) : null);
+
+              if (!isPastOrCurrent || !effectiveRec) {
                 // Future Step Slot (Faint 6% outline)
                 return (
                   <rect
@@ -517,10 +510,10 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
               }
 
               // Allocations calculation in stack order (Tier 1 bottom to Tier 3 top)
-              const allocs = rec.allocations || {};
-              const demands = rec.demands || {};
-              const totalAlloc = rec.total_allocated || sumAllocs(allocs);
-              const totalDem = rec.total_demand || sumAllocs(demands);
+              const allocs = effectiveRec.allocations || {};
+              const demands = effectiveRec.demands || {};
+              const totalAlloc = effectiveRec.total_allocated || sumAllocs(allocs);
+              const totalDem = effectiveRec.total_demand || sumAllocs(demands);
               const unmet = Math.max(0, totalDem - totalAlloc);
 
               let currentCumulativeY = paddingTop + plotHeight;
@@ -534,7 +527,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                   const pct = (val / Math.max(0.1, dem)) * 100;
                   segHeight = getH(pct / AGENT_ORDER.length, 100);
                 } else {
-                  segHeight = getH(val, maxScale);
+                  segHeight = getH(val, FIXED_MAX_MW);
                 }
 
                 if (segHeight > 0) {
@@ -550,9 +543,8 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
               });
 
               // Unmet demand hatched gap
-              const topOfAllocY = getY(viewMode === "percent" ? 100 : totalAlloc, viewMode === "percent" ? 100 : maxScale);
-              const topOfDemandY = getY(viewMode === "percent" ? 100 : totalDem, viewMode === "percent" ? 100 : maxScale);
-              const gapHeight = Math.max(0, topOfAllocY - topOfDemandY);
+              const topOfDemandY = getY(viewMode === "percent" ? 100 : totalDem, viewMode === "percent" ? 100 : FIXED_MAX_MW);
+              const gapHeight = Math.max(0, currentCumulativeY - topOfDemandY);
 
               return (
                 <g
@@ -568,7 +560,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                   style={{
                     transition: "opacity 180ms cubic-bezier(0.22,1,0.36,1)",
                   }}
-                  aria-label={`Step ${stepNum}: Supply ${rec.supply_mw} MW, Demand ${totalDem} MW, Unmet ${unmet.toFixed(1)} MW`}
+                  aria-label={`Step ${stepNum}: Supply ${effectiveRec.supply_mw} MW, Demand ${totalDem} MW, Unmet ${unmet.toFixed(1)} MW`}
                 >
                   {/* Unmet Demand Hatched Gap Rectangle */}
                   {unmet > 0.1 && gapHeight > 2 && viewMode === "stack" && (
@@ -598,7 +590,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                         height={seg.h}
                         fill={seg.color}
                         opacity={isIsolated ? 1 : 0.25}
-                        rx={seg.isTop ? 2 : 0}
+                        rx={seg.isTop && unmet <= 0.1 ? 2 : 0}
                         style={{
                           transition: "opacity 180ms cubic-bezier(0.22,1,0.36,1), fill 180ms ease",
                         }}
@@ -653,7 +645,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
             )}
 
             {/* Direct Supply End Label at Right Edge */}
-            <g transform={`translate(${paddingLeft + plotWidth + 8}, ${getY(viewMode === "percent" ? 100 : state.supply_mw, viewMode === "percent" ? 100 : maxScale)})`}>
+            <g transform={`translate(${paddingLeft + plotWidth + 8}, ${getY(viewMode === "percent" ? 100 : state.supply_mw, viewMode === "percent" ? 100 : FIXED_MAX_MW)})`}>
               <circle cx="0" cy="0" r="3" fill="#EDEEF0" opacity="0.8" />
               <text x="6" y="3.5" fill="#EDEEF0" fontSize="10.5" fontWeight="600" opacity="0.85">
                 Supply {state.supply_mw.toFixed(1)} MW
@@ -670,7 +662,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
 
               AGENT_ORDER.forEach((aid) => {
                 const val = allocs[aid] ?? 0;
-                const h = getH(val, maxScale);
+                const h = getH(val, FIXED_MAX_MW);
                 if (h > 4) {
                   cumY -= h;
                   labelItems.push({ aid, y: cumY + h / 2, mw: val });

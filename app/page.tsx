@@ -31,9 +31,10 @@ export default function CrisisDashboard() {
     };
   }, []);
 
-  // Playback timer loop
+  // Playback timer loop (active for Overview, Cascade, Benchmarks, Director)
+  // For the Negotiation tab, playback is orchestrated through the round stepper
   useEffect(() => {
-    if (isPlaying) {
+    if (isPlaying && activeTab !== "negotiation") {
       const intervalMs = Math.max(300, Math.round(1200 / speed));
       const timer = setInterval(() => {
         if (state.step >= state.total_steps) {
@@ -44,7 +45,7 @@ export default function CrisisDashboard() {
       }, intervalMs);
       return () => clearInterval(timer);
     }
-  }, [isPlaying, speed, state.step, state.total_steps]);
+  }, [isPlaying, speed, state.step, state.total_steps, activeTab]);
 
   const handleStep = (steps: number = 1) => {
     simClient.step(steps);
