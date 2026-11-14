@@ -86,17 +86,23 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
     let highest = 35.0;
     for (const h of state.history) {
       if (h.supply_mw && h.supply_mw > highest) highest = h.supply_mw;
-      if (h.total_demand && h.total_demand > highest) highest = h.total_demand;
+      // Cap scale calculation at 3x nominal capacity (105 MW) so anomalies never squash the chart
+      const safeDemand = Math.min(105.0, h.total_demand || 0);
+      if (safeDemand > highest) highest = safeDemand;
     }
-    return Math.max(40.0, Math.ceil(highest / 10) * 10);
+    return Math.min(105.0, Math.max(40.0, Math.ceil(highest / 10) * 10));
   }, [state.history]);
 
-  // SVG plot layout constants
+  const hasDataAnomaly = useMemo(() => {
+    return state.history.some((h) => (h.total_demand || 0) > 105.0);
+  }, [state.history]);
+
+  // SVG plot layout constants (expanded paddingTop for 3 staggered event lanes)
   const svgWidth = 1000;
-  const svgHeight = 350;
+  const svgHeight = 370;
   const paddingLeft = 55;
   const paddingRight = 110;
-  const paddingTop = 32;
+  const paddingTop = 56;
   const paddingBottom = 28;
 
   const plotWidth = svgWidth - paddingLeft - paddingRight;
@@ -219,6 +225,11 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.07)] text-[#9BA1AA]">
               Discrete 24 Steps
             </span>
+            {hasDataAnomaly && (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#F2555A]/20 border border-[#F2555A]/40 text-[#F2555A]">
+                Data Anomaly (Capped at 3x)
+              </span>
+            )}
           </div>
           <p className="text-xs text-[#9BA1AA] mt-0.5">
             SciPy HiGHS 3-stage optimization foundation with Tier 1 critical survival priority
@@ -425,15 +436,19 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
               );
             })}
 
-            {/* Scenario Event Shock Markers & Flags */}
+            {/* Scenario Event Shock Markers & Flags (Staggered across 3 lanes to avoid overlap) */}
             {scenarioEvents.map((ev, idx) => {
               const evX = paddingLeft + (ev.step - 0.5) * slotWidth;
               const isPastOrCurrent = ev.step <= currentStep;
+              const lane = idx % 3; // Stagger across 3 vertical lanes
+              const flagY = paddingTop - 12 - lane * 18;
+              const truncated = ev.label.length > 13 ? ev.label.slice(0, 11) + "…" : ev.label;
+
               return (
                 <g key={idx} className="transition-opacity duration-200">
                   <line
                     x1={evX}
-                    y1={paddingTop}
+                    y1={flagY + 8}
                     x2={evX}
                     y2={paddingTop + plotHeight}
                     stroke="#F5A524"
@@ -441,14 +456,15 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                     strokeDasharray="2 3"
                     strokeOpacity={isPastOrCurrent ? "0.45" : "0.15"}
                   />
-                  {/* Top Flag Banner */}
+                  {/* Top Flag Banner with tooltip */}
                   <g
-                    transform={`translate(${evX}, ${paddingTop - 14})`}
+                    transform={`translate(${evX}, ${flagY})`}
                     className="cursor-pointer"
                   >
+                    <title>{`${ev.label} (Shock at Step ${ev.step})`}</title>
                     <rect
                       x="-38"
-                      y="-11"
+                      y="-9"
                       width="76"
                       height="16"
                       rx="3"
@@ -459,13 +475,13 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                     />
                     <text
                       x="0"
-                      y="1"
+                      y="3"
                       textAnchor="middle"
                       fill="#F5A524"
-                      fontSize="9.5"
+                      fontSize="9"
                       fontWeight="600"
                     >
-                      {ev.label}
+                      {truncated}
                     </text>
                   </g>
                 </g>

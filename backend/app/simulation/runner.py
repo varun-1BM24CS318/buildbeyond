@@ -12,9 +12,11 @@ Executes multi-step scenario runs across all strategies under identical physics:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
+from app.agents.cheater import CheaterAgent
 from app.agents.registry import AgentRegistry
 from app.analytics.baselines import ProportionalBaseline, StrictPriorityBaseline
 from app.analytics.metrics import (
@@ -47,13 +49,18 @@ class SimulationRunner:
         scenario: str = "cheater_under_scarcity",
         horizon_steps: int = 12,
         cheater_enabled: bool = False,
+        registry: AgentRegistry | None = None,
+        cheater_agent_id: str | None = None,
     ) -> tuple[list[dict], SimulationMetrics]:
         """Run a single strategy through a scenario and collect step records and metrics."""
         env = EnvironmentState(seed=self.seed)
         ledger = Ledger(":memory:")
         cascade = CascadeModel()
-        registry = AgentRegistry()
+        registry = registry or AgentRegistry()
         network = NetworkTopology()
+
+        if cheater_enabled and cheater_agent_id:
+            registry.set_cheater_mode(cheater_agent_id, True)
 
         # Schedule scenario events
         events = create_scenario_events(scenario)
@@ -86,14 +93,23 @@ class SimulationRunner:
             criticalities = {aid: a.criticality for aid, a in agents.items()}
 
             # Collect true demand
-            true_demands = {aid: agent.estimate_demand(env_snap) for aid, a in agents.items()}
+            true_demands = {aid: a.estimate_demand(env_snap) for aid, a in agents.items()}
+
+            # Invariant check: 0 <= true_demand <= certified_max and finite
+            for aid, td in true_demands.items():
+                c_max = agents[aid].certified_max_mw
+                if not (0.0 <= td <= c_max + 1e-4):
+                    raise ValueError(f"Invariant violation at step {step}: Agent '{aid}' true_demand={td:.2f} exceeds certified_max={c_max:.2f}")
+                if not math.isfinite(td):
+                    raise ValueError(f"Invariant violation at step {step}: Agent '{aid}' true_demand={td} is not finite")
 
             # Generate bids (or simulate cheater inflation if active)
             bids = {}
             for aid, a in agents.items():
                 b = a.generate_bid(env_version=env.env_version)
-                if cheater_enabled and aid == "residential":
-                    # Cheater inflates demand by 1.8x up to certified max
+                is_cheat = registry.is_cheater(aid) or (cheater_enabled and aid in ("residential", "water"))
+                if is_cheat and not isinstance(a, CheaterAgent):
+                    # Fallback inflation up to certified max if not already CheaterAgent
                     inflated = min(a.certified_max_mw, b.requested_mw * 1.8)
                     b.requested_mw = inflated
                     b.reason = "STRATEGIC_INFLATION: Cheater agent inflated demand"

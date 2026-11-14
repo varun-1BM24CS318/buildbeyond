@@ -35,20 +35,29 @@ export const CommandCenterTab: React.FC<CommandCenterTabProps> = ({
         {/* Supply vs Demand */}
         <div className="linear-card p-4">
           <div className="flex items-center justify-between text-xs text-[#9BA1AA] mb-1">
-            <span>Supply vs Demand</span>
+            <span className="flex items-center gap-1.5">
+              <span>Supply vs Demand</span>
+              {state.total_demand > 105 && (
+                <span className="px-1.5 py-0.2 rounded bg-[#F2555A]/20 text-[#F2555A] text-[9px] font-mono">
+                  Data Anomaly
+                </span>
+              )}
+            </span>
             <span className="font-mono text-[11px] text-[#5F6670]">MW</span>
           </div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-2xl font-mono font-bold text-[#EDEEF0] tabular-nums">
-              {state.supply_mw}
+              {Number(state.supply_mw || 0).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
             </span>
             <span className="text-xs text-[#5F6670] font-mono">
-              / {state.total_demand} demand
+              / {Number(state.total_demand || 0).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} true demand
             </span>
           </div>
           <div className="mt-3 flex items-center justify-between text-[11px] font-mono">
             <span className={state.shortage_mw > 0 ? "text-[#F5A524]" : "text-[#3DD68C]"}>
-              {state.shortage_mw > 0 ? `Deficit: ${state.shortage_mw} MW` : "Balanced reserves"}
+              {state.shortage_mw > 0
+                ? `Deficit: ${Number(state.shortage_mw).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MW`
+                : "Balanced reserves"}
             </span>
             <span className="text-[#5F6670]">Step {state.step}</span>
           </div>

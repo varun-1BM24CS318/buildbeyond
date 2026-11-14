@@ -432,17 +432,27 @@ class SimulationClient {
     let supply = this.state.supply_mw;
     const agents = JSON.parse(JSON.stringify(this.state.agents));
 
+    const certifiedCaps: Record<string, number> = {
+      hospital: 6.0,
+      water: 5.0,
+      emergency: 4.0,
+      telecom: 3.5,
+      residential: 25.0,
+    };
+
     // Dynamic environmental curves per scenario
     if (this.state.scenario === "cyclone") {
       if (nextStep === 2) {
         supply = 24.5;
-        agents.emergency.demand = 4.2;
+        agents.emergency.demand = 4.0;
       } else if (nextStep >= 3 && nextStep <= 7) {
         supply = Math.max(13.5, 24.5 - (nextStep - 2) * 2.2);
         agents.water.demand = 4.8;
-        agents.emergency.demand = 4.5;
+        agents.emergency.demand = 4.0;
       } else if (nextStep > 7) {
         supply = Math.min(35.0, 13.5 + (nextStep - 7) * 3.5);
+        agents.water.demand = 4.0;
+        agents.emergency.demand = 3.0;
       }
     } else if (this.state.scenario === "grid_failure") {
       if (nextStep >= 3) {
@@ -450,16 +460,16 @@ class SimulationClient {
       }
     } else if (this.state.scenario === "hospital_generator_failure") {
       if (nextStep >= 2) {
-        agents.hospital.demand = 8.5;
+        agents.hospital.demand = 6.0;
       }
     } else if (this.state.scenario === "water_shortage") {
       if (nextStep >= 2) {
-        agents.water.demand = 6.2;
+        agents.water.demand = 5.0;
         supply = 22.0;
       }
     } else if (this.state.scenario === "telecom_failure") {
       if (nextStep >= 2) {
-        agents.telecom.demand = 4.0;
+        agents.telecom.demand = 3.5;
       }
     } else if (this.state.scenario === "cheater_under_scarcity") {
       if (nextStep >= 2) {
@@ -471,15 +481,28 @@ class SimulationClient {
       const hourSin = Math.sin((nextStep * 3.14159) / 6);
       agents.residential.demand = Math.round((20.5 + hourSin * 0.9) * 10) / 10;
       agents.telecom.demand = Math.round((2.5 + hourSin * 0.2) * 10) / 10;
+      agents.hospital.demand = 5.0;
+      agents.water.demand = 4.0;
+      agents.emergency.demand = 3.0;
     }
 
+    // Physical True Demand calculation & Invariant enforcement
     let totalDemand = 0;
+    const claimedDemands: Record<string, number> = {};
+
     for (const aid in agents) {
       const a = agents[aid];
-      if (a.is_cheater) {
-        a.demand = Math.round(a.demand * 1.8 * 10) / 10;
-      }
+      const cap = certifiedCaps[aid] || 25.0;
+      // Invariant: 0 <= true_demand <= certified_max
+      a.demand = Math.min(cap, Math.max(a.minimum_mw || 0.8, a.demand));
       totalDemand += a.demand;
+
+      // Strategic claim is strictly capped and decoupled from true physical demand
+      if (a.is_cheater) {
+        claimedDemands[aid] = Math.min(cap, Math.round(a.demand * 1.8 * 10) / 10);
+      } else {
+        claimedDemands[aid] = a.demand;
+      }
     }
 
     // Stage A: Critical Minimum Guarantees
@@ -544,12 +567,12 @@ class SimulationClient {
         a.reputation_trust = Math.min(1.0, a.reputation_trust + 0.05);
       }
 
-      // Generate concession rounds
-      const initialBid = a.demand * (a.is_cheater ? 1.6 : 1.1);
+      // Generate concession rounds based on claimedDemands
+      const initialBid = claimedDemands[aid] ?? a.demand;
       a.rounds = [
         { round: 0, bid_mw: Math.round(initialBid * 10) / 10, concession_mw: 0.0 },
-        { round: 1, bid_mw: Math.round((initialBid - 0.3) * 10) / 10, concession_mw: 0.3 },
-        { round: 2, bid_mw: Math.round((initialBid - 0.7) * 10) / 10, concession_mw: 0.4 },
+        { round: 1, bid_mw: Math.round(Math.max(a.minimum_mw, initialBid - 0.3) * 10) / 10, concession_mw: 0.3 },
+        { round: 2, bid_mw: Math.round(Math.max(a.minimum_mw, initialBid - 0.7) * 10) / 10, concession_mw: 0.4 },
         { round: 3, bid_mw: Math.round(a.allocation * 10) / 10, concession_mw: Math.round((initialBid - a.allocation) * 10) / 10 },
       ];
     }
@@ -859,21 +882,41 @@ class SimulationClient {
       residential: 20.5,
     };
 
+    const certifiedCaps: Record<string, number> = {
+      hospital: 6.0,
+      water: 5.0,
+      emergency: 4.0,
+      telecom: 3.5,
+      residential: 25.0,
+    };
+
     if (this.state.agents[agentId]) {
+      // Exactly one cheater at a time: disarm all others
+      if (isCheater) {
+        for (const aid in this.state.agents) {
+          if (aid !== agentId) {
+            this.state.agents[aid].is_cheater = false;
+          }
+        }
+      }
+
       this.state.agents[agentId].is_cheater = isCheater;
       const nominal = nominalDemands[agentId] ?? this.state.agents[agentId].demand;
+      const cap = certifiedCaps[agentId] ?? 25.0;
+
+      // Invariant: Physical true demand remains at nominal (never overwritten by strategic claim)
+      this.state.agents[agentId].demand = nominal;
 
       if (isCheater) {
-        this.state.agents[agentId].demand = Math.round(nominal * 1.8 * 10) / 10;
-        this.state.agents[agentId].explanation = `⚠️ CHEATER ACTIVE: Strategically overbidding by 1.8x (${this.state.agents[agentId].demand} MW vs true ${nominal} MW). Clarke pivot tax neutralizes profit.`;
+        const claimed = Math.min(cap, Math.round(nominal * 1.8 * 10) / 10);
+        this.state.agents[agentId].explanation = `⚠️ CHEATER ACTIVE: Strategically overbidding by 1.8x (${claimed} MW claim vs true need ${nominal} MW). Clarke pivot tax neutralizes profit.`;
         this.state.agents[agentId].rounds = [
-          { round: 0, bid_mw: Math.round(nominal * 2.0 * 10) / 10, concession_mw: 0.0 },
-          { round: 1, bid_mw: Math.round(nominal * 1.9 * 10) / 10, concession_mw: 0.1 },
-          { round: 2, bid_mw: Math.round(nominal * 1.8 * 10) / 10, concession_mw: 0.2 },
-          { round: 3, bid_mw: Math.round(nominal * 1.8 * 10) / 10, concession_mw: 0.2 },
+          { round: 0, bid_mw: claimed, concession_mw: 0.0 },
+          { round: 1, bid_mw: Math.round(Math.max(this.state.agents[agentId].minimum_mw, claimed - 0.2) * 10) / 10, concession_mw: 0.2 },
+          { round: 2, bid_mw: Math.round(Math.max(this.state.agents[agentId].minimum_mw, claimed - 0.4) * 10) / 10, concession_mw: 0.2 },
+          { round: 3, bid_mw: Math.round(this.state.agents[agentId].allocation * 10) / 10, concession_mw: Math.round((claimed - this.state.agents[agentId].allocation) * 10) / 10 },
         ];
       } else {
-        this.state.agents[agentId].demand = nominal;
         this.state.agents[agentId].explanation = INITIAL_AGENTS[agentId]?.explanation || "Operating under truthful demand elicitation.";
         this.state.agents[agentId].rounds = INITIAL_AGENTS[agentId]?.rounds || [
           { round: 0, bid_mw: nominal, concession_mw: 0.0 },

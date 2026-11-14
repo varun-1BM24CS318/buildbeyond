@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 from typing import Any
@@ -216,6 +217,19 @@ class SimulationController:
         minimums = {aid: a.minimum_mw for aid, a in agents.items()}
         criticalities = {aid: a.criticality for aid, a in agents.items()}
         true_demands = {aid: a.estimate_demand(env_snap) for aid, a in agents.items()}
+
+        # Simulation Invariant: 0 <= true_demand <= certified_max and finite
+        for aid, td in true_demands.items():
+            c_max = agents[aid].certified_max_mw
+            if not (0.0 <= td <= c_max + 1e-4):
+                raise ValueError(
+                    f"Simulation Invariant Violation at step {step}: Agent '{aid}' true_demand={td:.2f} "
+                    f"exceeds certified_max={c_max:.2f}"
+                )
+            if not math.isfinite(td):
+                raise ValueError(
+                    f"Simulation Invariant Violation at step {step}: Agent '{aid}' true_demand={td} is not finite"
+                )
 
         # 2b. Pre-allocation bid envelope verification
         if VERIFICATION_ENABLED:
