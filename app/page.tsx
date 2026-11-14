@@ -9,6 +9,7 @@ import { AnalyticsTab } from "@/components/dashboard/AnalyticsTab";
 import { DirectorTab } from "@/components/dashboard/DirectorTab";
 import { AssistantDrawer } from "@/components/dashboard/AssistantDrawer";
 import { SupabaseCloudModal } from "@/components/dashboard/SupabaseCloudModal";
+import { SimulationResultsPanel } from "@/components/dashboard/SimulationResultsPanel";
 import { LandingPage } from "@/components/landing/LandingPage";
 import { FullSimulationState } from "@/lib/types";
 import { simClient, INITIAL_SIM_STATE } from "@/lib/api-client";
@@ -20,6 +21,14 @@ export default function CrisisDashboard() {
   const [speed, setSpeed] = useState<number>(1);
   const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
   const [isSupabaseOpen, setIsSupabaseOpen] = useState<boolean>(false);
+  const [showResults, setShowResults] = useState<boolean>(false);
+
+  // Auto-open results panel when simulation completes
+  useEffect(() => {
+    if (state.step >= state.total_steps && state.total_steps > 1 && state.history.length > 0) {
+      setShowResults(true);
+    }
+  }, [state.step, state.total_steps, state.history.length]);
 
   // Subscribe to real-time simulation updates
   useEffect(() => {
@@ -53,6 +62,7 @@ export default function CrisisDashboard() {
 
   const handleReset = () => {
     setIsPlaying(false);
+    setShowResults(false);
     simClient.reset(state.scenario);
   };
 
@@ -144,6 +154,14 @@ export default function CrisisDashboard() {
         isOpen={isSupabaseOpen}
         onClose={() => setIsSupabaseOpen(false)}
       />
+
+      {/* ── Post-Simulation Results Panel (auto-opens at hour 24) ─────────── */}
+      {showResults && (
+        <SimulationResultsPanel
+          state={state}
+          onClose={() => setShowResults(false)}
+        />
+      )}
     </div>
   );
 }

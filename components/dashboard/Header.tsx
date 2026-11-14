@@ -18,6 +18,7 @@ import {
   GitBranch,
   Sliders,
   Radio,
+  Trophy,
 } from "lucide-react";
 import { FullSimulationState } from "@/lib/types";
 import { ScenarioDropdown } from "./ScenarioDropdown";
@@ -35,6 +36,7 @@ interface HeaderProps {
   setSpeed: (speed: number) => void;
   onOpenAssistant: () => void;
   onGoToLanding: () => void;
+  onShowResults?: () => void;
 }
 
 const SCENARIOS = [
@@ -73,6 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
   const isCompleted = state.step >= state.total_steps;
   const stepPercent = Math.min(100, Math.round((state.step / state.total_steps) * 100));
   const isViolation = (state.capacity_violations || 0) > 0;
+  const [showResultsExternal, setShowResultsExternal] = React.useState(false);
 
   return (
     <header className="sticky top-0 z-40 w-full bg-[#08090B]/90 backdrop-blur-md border-b border-[rgba(255,255,255,0.07)] text-[#EDEEF0]">
