@@ -13,3 +13,10 @@ __pycache__
 *.db-shm
 .env*
 !.env.example
+*.md
+*.pdf
+*.ps1
+scripts/
+app/
+components/
+public/

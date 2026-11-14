@@ -88,7 +88,12 @@ class SimulationController:
         if "pytest" in sys.modules or os.getenv("TESTING"):
             db_path = ":memory:"
         else:
-            db_path = os.getenv("LEDGER_DB_PATH", "backend/data/crisis_ledger.db")
+            env_db = os.getenv("LEDGER_DB_PATH")
+            if env_db:
+                db_path = env_db
+            else:
+                backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                db_path = os.path.join(backend_dir, "data", "crisis_ledger.db")
         if db_path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         self.ledger = Ledger(db_path)
