@@ -29,6 +29,15 @@ class SimulationMetrics:
     allocation_churn: float   # Mean absolute step-to-step MW swing
     mean_solve_time_ms: float
     optimality_gap_pct: float = 0.0  # vs LP oracle
+    total_critical_shortfall_mwh: float = 0.0  # Unmet critical minimums (Tier 1)
+
+
+def calculate_optimality_gap(damage_system: float, damage_oracle: float) -> float:
+    """Canonical single-source optimality gap metric vs oracle.
+
+    gap = (damage_system - damage_oracle) / max(damage_oracle, EPS) * 100.0
+    """
+    return round((max(0.0, damage_system - damage_oracle) / max(damage_oracle, EPS)) * 100.0, 2)
 
 
 def calculate_jains_index(allocations: Sequence[float], demands: Sequence[float]) -> float:
@@ -92,6 +101,7 @@ def evaluate_simulation_run(
     cascade_damage = 0.0
     total_unmet = 0.0
     priority_unserved = 0.0
+    critical_shortfall_total = 0.0
     critical_met_steps = 0
     capacity_violations = 0
     jains_scores = []
@@ -118,13 +128,13 @@ def evaluate_simulation_run(
         cum_damage += sum(damages.values())
         cascade_damage += sum(c_damages.values())
 
-        # 3. Critical uptime check
+        # 3. Critical uptime & shortfall check
         all_crit_met = True
         for aid, min_req in minimums.items():
             got = allocs.get(aid, 0.0)
             if got < min_req - 1e-3:
                 all_crit_met = False
-                break
+                critical_shortfall_total += max(0.0, min_req - got)
         if all_crit_met:
             critical_met_steps += 1
 
@@ -154,9 +164,8 @@ def evaluate_simulation_run(
     mean_solve = round(sum(solve_times) / len(solve_times), 2) if solve_times else 0.0
 
     gap_pct = 0.0
-    if oracle_damage is not None and oracle_damage > EPS:
-        # Gap vs oracle in damage avoidance
-        gap_pct = round(max(0.0, (cum_damage - oracle_damage) / oracle_damage) * 100.0, 2)
+    if oracle_damage is not None:
+        gap_pct = calculate_optimality_gap(cum_damage, oracle_damage)
 
     return SimulationMetrics(
         strategy_name=strategy_name,
@@ -171,4 +180,5 @@ def evaluate_simulation_run(
         allocation_churn=mean_churn,
         mean_solve_time_ms=mean_solve,
         optimality_gap_pct=gap_pct,
+        total_critical_shortfall_mwh=round(critical_shortfall_total, 2),
     )

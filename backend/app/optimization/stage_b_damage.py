@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import linprog
 
-from app.config import EPS, SOLVER_TIME_LIMIT
+from app.config import EPS, NETWORK_MODEL_ENABLED, SOLVER_TIME_LIMIT
 from app.negotiation.messages import BidMessage
+from app.network.constraints import build_network_line_constraints
+from app.network.topology import NetworkTopology
 
 
 @dataclass(slots=True)
@@ -45,6 +47,7 @@ def solve_stage_b(
     stage_a_shortfall: float,
     effective_values: dict[str, dict[str, float]] | None = None,
     epsilon_a: float = 1e-4,
+    topology: NetworkTopology | None = None,
 ) -> StageBResult:
     """Solve Stage B LP maximizing damage avoided while preserving Stage A guarantee."""
     t0 = time.perf_counter()
@@ -122,6 +125,13 @@ def solve_stage_b(
     A_ub_list.append(stage_a_row)
     b_ub_list.append(stage_a_shortfall + epsilon_a)
     constraint_names.append("stage_a_guarantee")
+
+    # 5. Network feeder thermal limits
+    if NETWORK_MODEL_ENABLED and topology is not None:
+        net_A, net_b, net_names = build_network_line_constraints(agent_seg_indices, n_vars, topology)
+        A_ub_list.extend(net_A)
+        b_ub_list.extend(net_b)
+        constraint_names.extend(net_names)
 
     A_ub = np.array(A_ub_list)
     b_ub = np.array(b_ub_list)

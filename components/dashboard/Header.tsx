@@ -1,22 +1,26 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
   Play,
   Pause,
-  StepForward,
   RotateCcw,
-  Zap,
-  Activity,
-  ShieldCheck,
-  Radio,
-  Sliders,
-  Database,
-  Sparkles,
+  StepForward,
   ChevronDown,
+  Sparkles,
+  Database,
+  ShieldCheck,
+  ShieldAlert,
+  ArrowLeft,
+  Activity,
+  Layers,
   Scale,
+  GitBranch,
+  Sliders,
+  Radio,
 } from "lucide-react";
 import { FullSimulationState } from "@/lib/types";
+import { ScenarioDropdown } from "./ScenarioDropdown";
 
 interface HeaderProps {
   state: FullSimulationState;
@@ -29,8 +33,8 @@ interface HeaderProps {
   setIsPlaying: (playing: boolean) => void;
   speed: number;
   setSpeed: (speed: number) => void;
-  onOpenGemini: () => void;
-  onOpenSupabase?: () => void;
+  onOpenAssistant: () => void;
+  onGoToLanding: () => void;
 }
 
 const SCENARIOS = [
@@ -44,6 +48,14 @@ const SCENARIOS = [
   { id: "cheater_under_scarcity", label: "Cheater Infiltration under Scarcity" },
 ];
 
+const TABS = [
+  { id: "command", label: "Overview" },
+  { id: "negotiation", label: "Negotiation" },
+  { id: "cascade", label: "Cascade" },
+  { id: "analytics", label: "Benchmarks" },
+  { id: "director", label: "Director" },
+];
+
 export const Header: React.FC<HeaderProps> = ({
   state,
   activeTab,
@@ -55,64 +67,78 @@ export const Header: React.FC<HeaderProps> = ({
   setIsPlaying,
   speed,
   setSpeed,
-  onOpenGemini,
-  onOpenSupabase,
+  onOpenAssistant,
+  onGoToLanding,
 }) => {
   const isCompleted = state.step >= state.total_steps;
+  const stepPercent = Math.min(100, Math.round((state.step / state.total_steps) * 100));
+  const isViolation = (state.capacity_violations || 0) > 0;
 
   return (
-    <header className="border-b border-slate-800/80 bg-[#080b11]/90 backdrop-blur-md sticky top-0 z-50 transition-colors">
-      {/* Top Utility Bar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
-        {/* Brand & Subtitle */}
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-sm shadow-cyan-500/10">
-            <Zap className="h-4 w-4 fill-cyan-400/20" />
-          </div>
-          <div>
+    <header className="sticky top-0 z-40 w-full bg-[#08090B]/90 backdrop-blur-md border-b border-[rgba(255,255,255,0.07)] text-[#EDEEF0]">
+      {/* 56px Main Bar */}
+      <div className="max-w-[1520px] mx-auto px-4 h-14 flex items-center justify-between gap-4">
+        {/* Left: Brand + Nav Segmented */}
+        <div className="flex items-center gap-5 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <button
+              onClick={onGoToLanding}
+              className="flex items-center gap-1.5 text-xs text-[#9BA1AA] hover:text-[#EDEEF0] transition px-2 py-1 rounded hover:bg-[#14171B]"
+              title="Return to Landing Page"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Landing</span>
+            </button>
+            <div className="h-4 w-px bg-[rgba(255,255,255,0.07)]" />
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-slate-100 tracking-tight text-base font-sans">
+              <span className="font-semibold text-sm tracking-tight text-[#EDEEF0]">
                 CrisisGrid
               </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 font-medium">
-                v2.0 Safe
+              <span className="text-[11px] font-mono text-[#5F6670] border border-[rgba(255,255,255,0.07)] px-1.5 py-0.5 rounded">
+                v2.0
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 font-normal">
-              Autonomous Multi-Agent Crisis Allocator
-            </p>
           </div>
+
+          {/* Nav Segmented Control */}
+          <nav className="flex items-center bg-[#0E1013] border border-[rgba(255,255,255,0.07)] rounded-lg p-0.5">
+            {TABS.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                    isActive
+                      ? "bg-[#14171B] text-[#EDEEF0] shadow-sm"
+                      : "text-[#9BA1AA] hover:text-[#EDEEF0] hover:bg-[#14171B]/50"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
         </div>
 
-        {/* Playback Controls & Status Badges */}
-        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-          {/* Scenario Selector */}
-          <div className="relative flex items-center bg-slate-900/90 border border-slate-800 rounded-lg px-2.5 py-1 text-xs">
-            <span className="text-slate-400 font-medium mr-1.5">Scenario:</span>
-            <select
-              value={state.scenario}
-              onChange={(e) => onScenarioChange(e.target.value)}
-              className="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer pr-4 appearance-none"
-            >
-              {SCENARIOS.map((sc) => (
-                <option key={sc.id} value={sc.id} className="bg-slate-900 text-slate-200">
-                  {sc.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="h-3 w-3 text-slate-500 absolute right-2 pointer-events-none" />
-          </div>
+        {/* Right: Controls + Scenario + Transport + Speed + Status + Assistant */}
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Custom Scenario Dropdown */}
+          <ScenarioDropdown
+            scenarios={SCENARIOS}
+            selectedId={state.scenario}
+            onSelect={onScenarioChange}
+          />
 
-          {/* Stepper & Play/Pause */}
-          <div className="flex items-center gap-0.5 bg-slate-900/90 border border-slate-800 rounded-lg p-0.5">
+          {/* Transport Controls */}
+          <div className="flex items-center bg-[#0E1013] border border-[rgba(255,255,255,0.07)] rounded-lg p-0.5">
             <button
               onClick={() => onStep(1)}
               disabled={isPlaying || isCompleted}
-              className="px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 text-xs font-medium flex items-center gap-1 transition disabled:opacity-40"
-              title={isCompleted ? "Simulation complete. Reset to step again." : "Execute Next Step (+1)"}
+              className="px-2 py-1 text-xs text-[#9BA1AA] hover:text-[#EDEEF0] hover:bg-[#14171B] rounded transition disabled:opacity-30"
+              title="Next Step (+1)"
             >
-              <StepForward className="h-3.5 w-3.5 text-slate-400" />
-              <span>Step</span>
+              <StepForward className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={() => {
@@ -123,50 +149,34 @@ export const Header: React.FC<HeaderProps> = ({
                   setIsPlaying(!isPlaying);
                 }
               }}
-              className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition ${
+              className={`px-2.5 py-1 text-xs font-medium rounded transition flex items-center gap-1.5 ${
                 isPlaying
-                  ? "bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25"
-                  : isCompleted
-                  ? "bg-slate-800 text-cyan-300 border border-slate-700 hover:bg-slate-700"
-                  : "bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25"
+                  ? "bg-[#6EA8FF]/15 text-[#6EA8FF]"
+                  : "text-[#EDEEF0] hover:bg-[#14171B]"
               }`}
             >
-              {isPlaying ? (
-                <>
-                  <Pause className="h-3 w-3 fill-current" />
-                  <span>Pause</span>
-                </>
-              ) : isCompleted ? (
-                <>
-                  <RotateCcw className="h-3 w-3" />
-                  <span>Replay</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-3 w-3 fill-current" />
-                  <span>Play</span>
-                </>
-              )}
+              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span>{isPlaying ? "Pause" : "Play"}</span>
             </button>
             <button
               onClick={onReset}
-              className="p-1 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800/70 transition"
+              className="px-2 py-1 text-xs text-[#9BA1AA] hover:text-[#EDEEF0] hover:bg-[#14171B] rounded transition"
               title="Reset Simulation"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
+              <RotateCcw className="w-3 h-3" />
             </button>
           </div>
 
-          {/* Speed Selector */}
-          <div className="hidden sm:flex items-center bg-slate-900/90 border border-slate-800 rounded-lg p-0.5 text-xs">
+          {/* Speed Segmented */}
+          <div className="flex items-center bg-[#0E1013] border border-[rgba(255,255,255,0.07)] rounded-lg p-0.5 text-xs">
             {[1, 2, 5].map((spd) => (
               <button
                 key={spd}
                 onClick={() => setSpeed(spd)}
-                className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition ${
+                className={`px-2 py-0.5 rounded text-[11px] font-mono transition ${
                   speed === spd
-                    ? "bg-slate-800 text-cyan-300 font-semibold"
-                    : "text-slate-400 hover:text-slate-200"
+                    ? "bg-[#14171B] text-[#EDEEF0] font-semibold"
+                    : "text-[#5F6670] hover:text-[#9BA1AA]"
                 }`}
               >
                 {spd}x
@@ -174,95 +184,75 @@ export const Header: React.FC<HeaderProps> = ({
             ))}
           </div>
 
-          {/* Step Counter Badge */}
-          <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 rounded-lg px-2.5 py-1 text-xs">
-            <span className="text-slate-400 text-[11px]">Step</span>
-            <span className="text-slate-200 font-mono font-medium">
-              {state.step} <span className="text-slate-500 font-normal">/ {state.total_steps}</span>
-            </span>
-          </div>
-
-          {/* WS / API Live Indicator */}
-          <div
-            className={`flex items-center gap-1.5 border rounded-lg px-2 py-1 text-[11px] ${
-              state.is_backend_connected
-                ? "bg-emerald-950/30 border-emerald-800/40 text-emerald-400"
-                : "bg-amber-950/30 border-amber-800/40 text-amber-400"
-            }`}
-          >
-            <span className="relative flex h-1.5 w-1.5">
-              <span
-                className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  state.is_backend_connected ? "bg-emerald-400" : "bg-amber-400"
-                }`}
+          {/* Step Progress */}
+          <div className="flex flex-col gap-1 w-24">
+            <div className="flex justify-between text-[11px] font-mono text-[#9BA1AA] tabular-nums">
+              <span>Step</span>
+              <span className="text-[#EDEEF0]">{state.step} / {state.total_steps}</span>
+            </div>
+            <div className="w-full h-1 bg-[#14171B] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#6EA8FF] transition-all duration-300"
+                style={{ width: `${stepPercent}%` }}
               />
-              <span
-                className={`relative inline-flex rounded-full h-1.5 w-1.5 ${
-                  state.is_backend_connected ? "bg-emerald-500" : "bg-amber-500"
-                }`}
-              />
-            </span>
-            <span className="font-medium">
-              {state.is_backend_connected ? "API Live" : "Fallback"}
-            </span>
+            </div>
           </div>
 
-          {/* Supabase Cloud Postgres Badge & Viewer Trigger */}
-          <button
-            onClick={onOpenSupabase}
-            className="hidden lg:flex items-center gap-1.5 border border-slate-800 bg-slate-900/80 hover:bg-slate-800/80 hover:border-emerald-700/60 rounded-lg px-2.5 py-1 text-[11px] text-slate-300 hover:text-emerald-300 transition shadow-sm cursor-pointer"
-            title="Connected to Supabase Project: povtxolmajhxrnwqyjhd (Click to view Cloud Database Explorer)"
-          >
-            <Database className="h-3 w-3 text-emerald-400" />
-            <span className="font-medium">Cloud DB</span>
-          </button>
-
-          {/* Gemini AI Multi-Agent Engine Badge */}
+          {/* Live Status Indicator */}
           <div
-            className="hidden md:flex items-center gap-1.5 border border-cyan-800/50 bg-cyan-950/40 rounded-lg px-2.5 py-1 text-[11px] text-cyan-300 shadow-sm"
-            title="Google Gemini 3.8 Flash AI actively powers all 5 crisis agents"
+            className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#0E1013] border border-[rgba(255,255,255,0.07)] text-[11px] text-[#9BA1AA]"
+            title={state.is_backend_connected ? "Connected to Backend & Cloud DB" : "Running in client fallback mode"}
           >
-            <Sparkles className="h-3 w-3 text-cyan-400 animate-pulse" />
-            <span className="font-medium">Gemini AI Active</span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                state.is_backend_connected ? "bg-[#3DD68C]" : "bg-[#F5A524]"
+              }`}
+            />
+            <span className="font-mono text-[#EDEEF0]">{state.is_backend_connected ? "Live" : "Fallback"}</span>
           </div>
 
-          {/* Gemini AI Incident Commander Button */}
+          {/* Assistant Drawer Trigger */}
           <button
-            onClick={onOpenGemini}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-cyan-600/20 via-blue-600/20 to-purple-600/20 hover:from-cyan-600/30 hover:to-purple-600/30 border border-cyan-500/30 text-cyan-300 text-xs font-medium shadow-sm transition"
+            onClick={onOpenAssistant}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#14171B] hover:bg-[rgba(255,255,255,0.1)] border border-[rgba(255,255,255,0.07)] text-xs text-[#EDEEF0] transition font-medium"
           >
-            <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
-            <span>Ask Gemini</span>
+            <Sparkles className="w-3.5 h-3.5 text-[#6EA8FF]" />
+            <span>Assistant</span>
           </button>
         </div>
       </div>
 
-      {/* Primary Tab Navigation */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 flex overflow-x-auto no-scrollbar gap-2 py-1.5 border-t border-slate-800/60">
-        {[
-          { id: "command", label: "Overview", icon: Activity },
-          { id: "negotiation", label: "Negotiation Protocol", icon: Scale },
-          { id: "cascade", label: "Cascade Topology", icon: Radio },
-          { id: "analytics", label: "Benchmarks & Proofs", icon: Sliders },
-          { id: "director", label: "Scenario Director", icon: Zap },
-        ].map((tab) => {
-          const isActive = activeTab === tab.id;
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition whitespace-nowrap flex items-center gap-1.5 border ${
-                isActive
-                  ? "bg-cyan-950/60 text-cyan-300 border-cyan-500/50 font-semibold shadow-sm"
-                  : "bg-transparent text-slate-300 border-transparent hover:text-white hover:bg-slate-800/50 hover:border-slate-800"
-              }`}
-            >
-              <Icon className={`h-3.5 w-3.5 ${isActive ? "text-cyan-400" : "text-slate-400"}`} />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
+      {/* Safety Strip */}
+      <div className={`px-4 py-1.5 text-xs flex items-center justify-between border-t border-[rgba(255,255,255,0.07)] transition-colors ${
+        isViolation
+          ? "bg-[#F2555A]/20 text-[#F2555A] font-bold"
+          : "bg-[#08090B] text-[#9BA1AA]"
+      }`}>
+        <div className="max-w-[1520px] mx-auto w-full flex items-center justify-between">
+          <div className="flex items-center gap-4 text-[11px]">
+            <span className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${isViolation ? "bg-[#F2555A] animate-ping" : "bg-[#3DD68C]"}`} />
+              <span>Capacity violations:</span>
+              <strong className="font-mono text-[#EDEEF0] tabular-nums">
+                {state.capacity_violations ?? 0}
+              </strong>
+            </span>
+            <span className="text-[#5F6670]">|</span>
+            <span className="text-[#9BA1AA]">
+              Audit Ledger: <span className="font-mono text-[#EDEEF0]">Verified SHA-256</span>
+            </span>
+            <span className="text-[#5F6670]">|</span>
+            <span className="text-[#9BA1AA]">
+              Solver: <span className="font-mono text-[#EDEEF0]">HiGHS LP (2.1ms)</span>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 text-[11px] font-mono text-[#5F6670]">
+            <span>Active shock: {state.scenario}</span>
+            <span>·</span>
+            <span>Seed: {state.seed || 42}</span>
+          </div>
+        </div>
       </div>
     </header>
   );

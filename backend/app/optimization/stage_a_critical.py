@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import linprog
 
-from app.config import EPS, SOLVER_TIME_LIMIT
+from app.config import EPS, NETWORK_MODEL_ENABLED, SOLVER_TIME_LIMIT
 from app.negotiation.messages import BidMessage
+from app.network.constraints import build_network_line_constraints
+from app.network.topology import NetworkTopology
 
 
 @dataclass(slots=True)
@@ -43,6 +45,7 @@ def solve_stage_a(
     supply_mw: float,
     minimums: dict[str, float],
     criticalities: dict[str, float],
+    topology: NetworkTopology | None = None,
 ) -> StageAResult:
     """Solve Stage A LP using SciPy HiGHS."""
     t0 = time.perf_counter()
@@ -113,6 +116,12 @@ def solve_stage_a(
         sf_row[shortfall_indices[aid]] = -1.0
         A_ub_list.append(sf_row)
         b_ub_list.append(-minimums.get(aid, 0.0))
+
+    # 4. Network feeder thermal limits (if network model enabled)
+    if NETWORK_MODEL_ENABLED and topology is not None:
+        net_A, net_b, _ = build_network_line_constraints(agent_seg_indices, n_vars, topology)
+        A_ub_list.extend(net_A)
+        b_ub_list.extend(net_b)
 
     A_ub = np.array(A_ub_list)
     b_ub = np.array(b_ub_list)

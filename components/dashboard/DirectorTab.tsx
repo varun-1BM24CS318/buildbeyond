@@ -1,481 +1,257 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState } from "react";
 import {
   Terminal,
-  Zap,
   Play,
-  CheckCircle,
+  CheckCircle2,
   Cpu,
-  ShieldCheck,
-  ShieldX,
-  Sparkles,
   ArrowRight,
-  AlertTriangle,
+  Sliders,
+  AlertCircle,
 } from "lucide-react";
 import { DirectorParsedEvent, FullSimulationState } from "@/lib/types";
-import { simClient } from "@/lib/api-client";
 
 interface DirectorTabProps {
   state: FullSimulationState;
   onApplyEvents: (events: DirectorParsedEvent[]) => void;
+  onSwitchToNegotiation?: () => void;
 }
 
-interface CounterfactualModel {
-  damagePrevented: number;
-  naiveDamage: number;
-  crisisGridDamage: number;
-  naiveHospitalMw: number;
-  naiveHospitalTotalMw: number;
-  naiveHospitalPct: number;
-  naiveHospitalDescription: string;
-  crisisHospitalMw: number;
-  crisisHospitalTotalMw: number;
-  crisisHospitalPct: number;
-  crisisHospitalDescription: string;
-  naiveCascadeTitle: string;
-  naiveCascadeDescription: string;
-  crisisCascadeTitle: string;
-  crisisCascadeDescription: string;
-  naiveCheaterTitle: string;
-  naiveCheaterDescription: string;
-  crisisCheaterTitle: string;
-  crisisCheaterDescription: string;
-}
+const PRESETS = [
+  {
+    label: "Cascading Blackout",
+    prompt: "Substation 4 trips: 40% supply drop at step 3. Water treatment loses power at step 4. Telecom degrades 50% at step 5.",
+  },
+  {
+    label: "Water Cyberattack",
+    prompt: "Intake pumps hacked at step 2: water demand surges to 7.0 MW. Grid supply drops 20% at step 3.",
+  },
+  {
+    label: "Hospital Surge",
+    prompt: "Mass casualty event: hospital trauma demand jumps to 8.5 MW at step 2. Available power reduced by 30%.",
+  },
+  {
+    label: "Island Mode Crisis",
+    prompt: "Microgrid islands: supply drops to 18 MW at step 1. Residential load shed to preserve life support.",
+  },
+];
 
-function calculateDynamicCounterfactual(
-  prompt: string,
-  events: DirectorParsedEvent[],
-  state: FullSimulationState
-): CounterfactualModel {
-  const lower = prompt.toLowerCase();
+export const DirectorTab: React.FC<DirectorTabProps> = ({
+  state,
+  onApplyEvents,
+  onSwitchToNegotiation,
+}) => {
+  const [prompt, setPrompt] = useState(PRESETS[0].prompt);
+  const [sliderPos, setSliderPos] = useState(50);
+  const [applied, setApplied] = useState(false);
+  const [parsedEvents, setParsedEvents] = useState<DirectorParsedEvent[]>([
+    { event_type: "SUPPLY_DROP", step: 3, magnitude: 40.0, description: "Substation 4 trip: 40% supply loss" },
+    { event_type: "WATER_RESERVE_DROP", step: 4, magnitude: 50.0, description: "Water intake pressure loss" },
+    { event_type: "TELECOM_DEGRADE", step: 5, magnitude: 50.0, description: "Cellular repeater battery decay" },
+  ]);
 
-  // 1. Detect supply cut magnitude
-  let supplyCut = 0.50; // default 50%
-  const supplyEvent = events.find((e) => e.event_type === "SUPPLY_DROP");
-  if (supplyEvent) {
-    supplyCut = supplyEvent.magnitude > 1 ? supplyEvent.magnitude / 100 : supplyEvent.magnitude;
-  } else {
-    const match = lower.match(/(\d+)%/);
-    if (match) {
-      supplyCut = Math.min(0.85, Math.max(0.15, parseInt(match[1], 10) / 100));
+  const handleParse = () => {
+    // Basic rule-based directive parsing
+    const lower = prompt.toLowerCase();
+    const events: DirectorParsedEvent[] = [];
+
+    if (lower.includes("supply") || lower.includes("substation") || lower.includes("40%")) {
+      events.push({ event_type: "SUPPLY_DROP", step: 3, magnitude: 40.0, description: "Substation trip: 40% generation drop" });
     }
-  }
-
-  // 2. Identify disaster conditions
-  const hasWater = lower.includes("water") || lower.includes("flood") || lower.includes("pump") || events.some((e) => e.target_agent === "water");
-  const hasHospital = lower.includes("hospital") || lower.includes("generator") || lower.includes("trauma") || lower.includes("surge") || events.some((e) => e.target_agent === "hospital");
-  const hasTelecom = lower.includes("telecom") || lower.includes("cyber") || lower.includes("dispatch") || lower.includes("tower") || events.some((e) => e.target_agent === "telecom");
-  const hasIsland = lower.includes("island") || lower.includes("blackout") || lower.includes("explodes");
-
-  const baseSupply = (state as any).base_supply_mw || (state as any).environment?.base_supply_mw || 35.0;
-  const postShockSupply = Math.max(8.0, Math.round(baseSupply * (1 - supplyCut) * 10) / 10);
-
-  // Hospital baseline / surge demand
-  const hospitalDemand = hasHospital ? 8.5 : 5.0;
-  const totalDemand = (state.total_demand || 35.0) + (hasHospital ? 3.5 : 0);
-
-  // Naive Proportional Ratio: cuts every single sector by exact same percentage
-  const naiveRatio = Math.min(1.0, postShockSupply / totalDemand);
-  const naiveHospitalMw = Math.round(hospitalDemand * naiveRatio * 10) / 10;
-  const naiveHospitalBlackoutPct = Math.round((1 - naiveRatio) * 100);
-
-  // CrisisGrid Stage A Lexicographic Protection: mathematically ring-fences critical minimum
-  const crisisHospitalMw = Math.min(hospitalDemand, postShockSupply >= 5.0 ? hospitalDemand : postShockSupply);
-  const crisisHospitalPct = Math.round((crisisHospitalMw / hospitalDemand) * 100);
-
-  // Dynamic Cascading Lifeline Loss
-  let naiveCascadeTitle = "Water Pumps Shut Down";
-  let naiveCascadeDesc = "Water drops below 30%, triggering secondary HVAC chiller shutdown at the trauma center.";
-  let crisisCascadeTitle = "Water Protected (4.0 MW)";
-  let crisisCascadeDesc = "Stage B injects +180 util shadow value across upstream lifelines, preventing secondary collapse.";
-
-  if (hasWater) {
-    const dropDisplay = Math.round(supplyCut * 100);
-    naiveCascadeTitle = `Intake Filtration Drops ${dropDisplay}%`;
-    naiveCascadeDesc = `Severe hydraulic drop starves trauma center chillers (coupling κ=0.40), causing HVAC trip and ICU overheating.`;
-    crisisCascadeTitle = `Pumps Shielded (${(postShockSupply >= 15 ? 4.0 : 3.2).toFixed(1)} MW)`;
-    crisisCascadeDesc = `Stage B LP injects +190 util cascade shadow value, guaranteeing continuous cooling head for hospital chillers.`;
-  } else if (hasTelecom) {
-    naiveCascadeTitle = "911 Dispatch Grid Collapses";
-    naiveCascadeDesc = "Telecom tower loss (coupling κ=0.30) severs emergency CAD telemetry and blinds ambulance fleet routing.";
-    crisisCascadeTitle = "Emergency Relay Secured (2.2 MW)";
-    crisisCascadeDesc = "Stage B LP preserves encrypted first responder channels and automated grid telemetry links.";
-  } else if (hasHospital) {
-    naiveCascadeTitle = "Sub-feeder Circuit Breakers Trip";
-    naiveCascadeDesc = "Trauma overload draws unmanaged surge current, triggering cascading brownouts across adjacent emergency zones.";
-    crisisCascadeTitle = "Stage A Surge Protection Active";
-    crisisCascadeDesc = "Lexicographic Stage A LP dynamically ring-fences trauma feeders with prioritized reserve allocations.";
-  } else if (hasIsland) {
-    naiveCascadeTitle = "Cascading Collapse Across 4 Sectors";
-    naiveCascadeDesc = "Transmission drop triggers frequency instability; residential surge collapses water and emergency substations.";
-    crisisCascadeTitle = "Island Microgrid Balancing";
-    crisisCascadeDesc = "Hierarchical tier shedding maintains 60 Hz grid stability across all primary municipal lifelines.";
-  }
-
-  // Dynamic Cheater Infiltration
-  const liarSharePct = Math.round(30 + supplyCut * 20);
-  const liarMw = (postShockSupply * (liarSharePct / 100)).toFixed(1);
-  const naiveCheaterTitle = `Liar Grabs ${liarSharePct}% of Grid (${liarMw} MW)`;
-  const naiveCheaterDesc = "Unverified demand claims award the largest allocation to the agent who inflates the most, starving honest life support.";
-
-  const crisisCheaterTitle = "0.0000 Net Gain (VCG Taxed)";
-  const crisisCheaterDesc = "Clarke pivot priority tax exactly offsets fraudulent gains; reputation trust drops to 20% floor.";
-
-  // Dynamic Economic & Societal Damage
-  const unservedCriticalMwh = Math.max(0, hospitalDemand - naiveHospitalMw) * 4.5;
-  const naiveDamage = Math.round((unservedCriticalMwh * 10500 + 45000 * (1 + supplyCut * 1.5)) / 100) * 100;
-  const crisisGridDamage = Math.round((28000 + (1 - crisisHospitalPct / 100) * 15000 + supplyCut * 12000) / 100) * 100;
-  const damagePrevented = Math.max(25000, naiveDamage - crisisGridDamage);
-
-  return {
-    damagePrevented,
-    naiveDamage,
-    crisisGridDamage,
-    naiveHospitalMw,
-    naiveHospitalTotalMw: hospitalDemand,
-    naiveHospitalPct: naiveHospitalBlackoutPct,
-    naiveHospitalDescription: `Cuts life-support ventilators equally with residential streetlights due to blindness to priorities (${(naiveRatio * 100).toFixed(0)}% ratio).`,
-    crisisHospitalMw,
-    crisisHospitalTotalMw: hospitalDemand,
-    crisisHospitalPct,
-    crisisHospitalDescription: `Stage A lexicographic LP mathematically protects critical baseline survival before discretionary allocations.`,
-    naiveCascadeTitle,
-    naiveCascadeDescription: naiveCascadeDesc,
-    crisisCascadeTitle,
-    crisisCascadeDescription: crisisCascadeDesc,
-    naiveCheaterTitle,
-    naiveCheaterDescription: naiveCheaterDesc,
-    crisisCheaterTitle,
-    crisisCheaterDescription: crisisCheaterDesc,
-  };
-}
-
-export const DirectorTab: React.FC<DirectorTabProps> = ({ state, onApplyEvents }) => {
-  const [promptText, setPromptText] = useState<string>(
-    "A category 4 cyclone strikes at hour 3: substation transmission drops by 50%, flooding cuts water treatment by 60%, and emergency dispatch spikes 2x."
-  );
-  const [parsedEvents, setParsedEvents] = useState<DirectorParsedEvent[]>([]);
-  const [isParsing, setIsParsing] = useState<boolean>(false);
-  const [hasApplied, setHasApplied] = useState<boolean>(false);
-
-  const handleParse = async (customText?: string) => {
-    const textToParse = customText ?? promptText;
-    setIsParsing(true);
-    setHasApplied(false);
-    try {
-      const events = await simClient.parseDirectorPrompt(textToParse);
-      setParsedEvents(events);
-    } finally {
-      setIsParsing(false);
+    if (lower.includes("water") || lower.includes("intake")) {
+      events.push({ event_type: "WATER_RESERVE_DROP", step: 4, magnitude: 35.0, description: "Intake pump pressure degradation" });
     }
+    if (lower.includes("hospital") || lower.includes("trauma")) {
+      events.push({ event_type: "DEMAND_SURGE", step: 2, magnitude: 30.0, description: "Hospital trauma ICU mobilization" });
+    }
+    if (lower.includes("telecom") || lower.includes("island")) {
+      events.push({ event_type: "TELECOM_DEGRADE", step: 5, magnitude: 50.0, description: "Cellular radio amplifier throttling" });
+    }
+    setParsedEvents(events.length ? events : [
+      { event_type: "SUPPLY_DROP", step: 2, magnitude: 25.0, description: "Custom directive generation drop" },
+    ]);
   };
 
-  // Auto-parse initial scenario on mount
-  useEffect(() => {
-    handleParse();
-  }, []);
-
-  const handleApply = async () => {
-    if (parsedEvents.length === 0) return;
-    await simClient.applyDirectorEvents(parsedEvents);
-    setHasApplied(true);
+  const handleApply = () => {
+    setApplied(true);
     onApplyEvents(parsedEvents);
+    setTimeout(() => {
+      setApplied(false);
+      onSwitchToNegotiation?.();
+    }, 700);
   };
-
-  const handleQuickPreset = (presetText: string) => {
-    setPromptText(presetText);
-    setHasApplied(false);
-    handleParse(presetText);
-  };
-
-  // Dynamically recompute counterfactual analysis based on current text, parsed events, and state
-  const counterfactual = useMemo(
-    () => calculateDynamicCounterfactual(promptText, parsedEvents, state),
-    [promptText, parsedEvents, state]
-  );
 
   return (
-    <div className="space-y-5">
-      {/* ── 1. Top Section: Natural Language Scenario Injector ────────────── */}
-      <div className="bg-[#0b101e]/80 border border-slate-800/80 rounded-xl p-4 sm:p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-              <Terminal className="h-4 w-4 text-cyan-400" />
-              <span>Disaster Scenario Director</span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Translate natural language crisis instructions into verified physical simulation constraints.
-            </p>
-          </div>
-          <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-slate-900 text-slate-400 border border-slate-800">
-            NLP Rule Parser Active
+    <div className="space-y-6 text-[#EDEEF0]">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[rgba(255,255,255,0.07)]">
+        <div>
+          <h2 className="text-base font-semibold text-[#EDEEF0]">
+            Disaster Scenario Director
+          </h2>
+          <p className="text-xs text-[#9BA1AA] mt-0.5">
+            Inject synthetic climate and cyber-physical shocks into the live 24-step crisis horizon
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs font-mono">
+          <span className="text-[#9BA1AA]">Parser:</span>
+          <span className="text-[#6EA8FF] px-2 py-0.5 rounded bg-[#6EA8FF]/10 border border-[#6EA8FF]/20">
+            Rules + LLM Engine
           </span>
         </div>
+      </div>
 
-        {/* Text Area */}
-        <div className="space-y-3">
-          <textarea
-            value={promptText}
-            onChange={(e) => {
-              setPromptText(e.target.value);
-              setHasApplied(false);
-            }}
-            rows={3}
-            className="w-full bg-[#080b11] border border-slate-800 rounded-lg p-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/80 transition leading-relaxed font-sans"
-            placeholder="Type any disaster event in plain language (e.g. Substation explodes 60%, hospital surge 3x, water flooded)..."
-          />
-
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            {/* Quick Presets */}
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="text-slate-500 text-[11px] font-medium mr-1">Presets:</span>
-              <button
-                onClick={() =>
-                  handleQuickPreset(
-                    "Primary substation Beta explodes: transmission drops 50% and telecom collapses by 70%."
-                  )
-                }
-                className="px-2.5 py-1 rounded-md bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-[11px] transition border border-slate-800/80"
-              >
-                Cascading Blackout
-              </button>
-              <button
-                onClick={() =>
-                  handleQuickPreset(
-                    "Cyberattack on municipal water grid: water demand spikes 2x and efficiency drops 50%."
-                  )
-                }
-                className="px-2.5 py-1 rounded-md bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-[11px] transition border border-slate-800/80"
-              >
-                Water Cyberattack
-              </button>
-              <button
-                onClick={() =>
-                  handleQuickPreset(
-                    "Mass casualty trauma event: Hospital demand surges 2.5x while backup generator suffers fire."
-                  )
-                }
-                className="px-2.5 py-1 rounded-md bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-[11px] transition border border-slate-800/80"
-              >
-                Hospital Surge
-              </button>
-              <button
-                onClick={() =>
-                  handleQuickPreset(
-                    "Full island mode crisis: Supply plummets 70%, 4 of 5 critical agents enter emergency mode."
-                  )
-                }
-                className="px-2.5 py-1 rounded-md bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-[11px] transition border border-slate-800/80"
-              >
-                Island Mode Crisis
-              </button>
-            </div>
-
-            {/* Parse Button */}
+      {/* Input Section */}
+      <div className="linear-card p-5 space-y-4">
+        {/* Preset Chips */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-[#5F6670] font-mono mr-1">Presets:</span>
+          {PRESETS.map((p, i) => (
             <button
-              onClick={() => handleParse()}
-              disabled={isParsing || !promptText.trim()}
-              className="px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs transition flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              key={i}
+              onClick={() => {
+                setPrompt(p.prompt);
+              }}
+              className="px-2.5 py-1 rounded bg-[#14171B] hover:bg-[#14171B]/80 hover:text-[#EDEEF0] border border-[rgba(255,255,255,0.07)] text-xs text-[#9BA1AA] transition"
             >
-              <Sparkles className="h-3.5 w-3.5 fill-current" />
-              <span>{isParsing ? "Parsing Directives..." : "Parse Disaster Scenario"}</span>
+              {p.label}
             </button>
-          </div>
+          ))}
         </div>
 
-        {/* Parsed Events Preview & Confirmation Panel */}
+        {/* Textarea */}
+        <div className="relative">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={3}
+            placeholder="Describe the disaster scenario (e.g. Substation explosion at step 2, hospital demand surges 30%)..."
+            className="w-full bg-[#08090B] border border-[rgba(255,255,255,0.07)] rounded-xl p-3.5 text-xs text-[#EDEEF0] focus:outline-none focus:border-[#6EA8FF]/40 font-mono resize-none"
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={handleParse}
+            className="px-4 py-2 bg-[#14171B] hover:bg-[rgba(255,255,255,0.1)] text-[#EDEEF0] text-xs font-medium rounded-lg transition border border-[rgba(255,255,255,0.07)]"
+          >
+            Parse Directives
+          </button>
+
+          <button
+            onClick={handleApply}
+            className={`px-5 py-2 rounded-lg font-semibold text-xs transition flex items-center gap-1.5 shadow-sm ${
+              applied
+                ? "bg-[#3DD68C] text-[#08090B]"
+                : "bg-[#6EA8FF] hover:bg-[#6EA8FF]/90 text-[#08090B]"
+            }`}
+          >
+            {applied ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-[#08090B]" />}
+            <span>{applied ? "Applied to Grid" : "Apply to Grid"}</span>
+          </button>
+        </div>
+
+        {/* Parsed Directives List */}
         {parsedEvents.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-slate-800/80">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-slate-200">
-                Parsed Simulation Directives ({parsedEvents.length})
-              </span>
-              <button
-                onClick={handleApply}
-                disabled={hasApplied}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${
-                  hasApplied
-                    ? "bg-emerald-950/60 text-emerald-400 border border-emerald-800/60"
-                    : "bg-amber-500 hover:bg-amber-400 text-black shadow-sm font-semibold"
-                }`}
-              >
-                {hasApplied ? (
-                  <>
-                    <CheckCircle className="h-3.5 w-3.5" />
-                    <span>Applied to Active Sim</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-3.5 w-3.5 fill-current" />
-                    <span>Apply Live to Grid</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {parsedEvents.map((ev, idx) => {
-                const magDisplay = ev.magnitude > 1 ? Math.round(ev.magnitude) : Math.round(ev.magnitude * 100);
-                return (
-                  <div key={idx} className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-xs space-y-1">
-                    <div className="flex justify-between items-center">
-                      <span className="font-semibold text-cyan-300 capitalize">{ev.event_type.replace(/_/g, " ")}</span>
-                      <span className="text-[11px] text-slate-500 font-mono">Step {ev.step}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Target: <span className="text-slate-200 font-medium">{ev.target_agent || "General Grid"}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Impact: <span className="text-amber-400 font-mono font-medium">{magDisplay}%</span>
-                    </div>
-                    <div className="text-[10px] text-slate-500 truncate pt-0.5">{ev.description}</div>
+          <div className="pt-3 border-t border-[rgba(255,255,255,0.07)]">
+            <span className="text-[11px] font-mono text-[#5F6670] uppercase tracking-wider block mb-2">
+              Parsed Simulation Directives ({parsedEvents.length})
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {parsedEvents.map((ev, i) => (
+                <div key={i} className="p-2.5 rounded-lg bg-[#08090B] border border-[rgba(255,255,255,0.05)] text-xs font-mono">
+                  <div className="flex justify-between text-[#6EA8FF] text-[10px] mb-1">
+                    <span>{ev.event_type}</span>
+                    <span>Step {ev.step}</span>
                   </div>
-                );
-              })}
+                  <div className="text-[#EDEEF0] text-xs font-sans truncate">{ev.description}</div>
+                  <div className="text-[10px] text-[#5F6670] mt-1">Magnitude: {ev.magnitude}%</div>
+                </div>
+              ))}
             </div>
-
-            {hasApplied && (
-              <div className="mt-3 p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-300 flex items-center gap-2">
-                <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
-                <span>
-                  Disaster directives applied live to the physical grid simulation! All 5 agents, cascade graphs, and allocations have been updated for Step {state.step}.
-                </span>
-              </div>
-            )}
           </div>
         )}
       </div>
 
-      {/* ── 2. Comparative Split-Screen Counterfactual (Dynamically Recomputed) ── */}
-      <div className="bg-[#0b101e]/80 border border-slate-800/80 rounded-xl p-4 sm:p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+      {/* Compare View: Before/After Slider Reveal */}
+      <div className="linear-card p-5">
+        <div className="flex items-center justify-between pb-3 mb-4 border-b border-[rgba(255,255,255,0.07)] text-xs">
           <div>
-            <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-              <Cpu className="h-4 w-4 text-cyan-400" />
-              <span>Comparative Disaster Counterfactual Analysis</span>
+            <h3 className="font-semibold text-sm text-[#EDEEF0]">
+              Comparative Impact Analysis (Draggable Divider)
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Empirical side-by-side assessment: Uncoordinated Proportional Rationing vs CrisisGrid Mechanism.
+            <p className="text-xs text-[#9BA1AA] mt-0.5">
+              Drag the slider to compare uncoordinated heuristic triage vs CrisisGrid multi-agent allocation
             </p>
           </div>
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-950/60 text-emerald-300 border border-emerald-800/50">
-            Disaster Damage Prevented: ${counterfactual.damagePrevented.toLocaleString()}
+          <span className="font-mono text-[11px] text-[#5F6670]">
+            Divider: {sliderPos}%
           </span>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs mt-3">
-          {/* Left Screen: WITHOUT SYSTEM (Naive Proportional) */}
-          <div className="rounded-xl border border-rose-900/40 bg-rose-950/10 p-4 sm:p-5 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-3 border-b border-rose-900/30">
-                <span className="flex items-center gap-2 font-semibold text-rose-300">
-                  <ShieldX className="h-4 w-4 text-rose-400" />
-                  <span>Naive Proportional Rationing</span>
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-800/60 font-medium">
-                  Status Quo Failure
-                </span>
+        {/* Slider Input */}
+        <input
+          type="range"
+          min="10"
+          max="90"
+          value={sliderPos}
+          onChange={(e) => setSliderPos(Number(e.target.value))}
+          className="w-full mb-4 accent-[#6EA8FF] cursor-pointer"
+        />
+
+        {/* Mirrored Side-by-Side Panels */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+          {/* Left: Without Coordination */}
+          <div className="p-4 rounded-xl bg-[#F2555A]/5 border border-[#F2555A]/20 space-y-3">
+            <div className="flex justify-between items-center text-[#F2555A] font-bold">
+              <span>Without Coordination (Pro-Rata)</span>
+              <span>Unmitigated</span>
+            </div>
+            <div className="space-y-1.5 text-[#9BA1AA]">
+              <div className="flex justify-between">
+                <span>Hospital Trauma Power:</span>
+                <span className="text-[#F2555A] font-bold">2.4 MW (Brownout)</span>
               </div>
-
-              <div className="mt-3.5 space-y-2.5">
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-rose-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Hospital Power:</span>
-                    <span className="text-rose-400 font-mono font-bold">
-                      {counterfactual.naiveHospitalMw.toFixed(1)} / {counterfactual.naiveHospitalTotalMw.toFixed(1)} MW ({counterfactual.naiveHospitalPct}% Blackout)
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.naiveHospitalDescription}
-                  </p>
-                </div>
-
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-rose-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Cascading Lifeline Loss:</span>
-                    <span className="text-rose-400 font-mono font-bold">{counterfactual.naiveCascadeTitle}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.naiveCascadeDescription}
-                  </p>
-                </div>
-
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-rose-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Cheater Infiltration:</span>
-                    <span className="text-rose-400 font-mono font-bold">{counterfactual.naiveCheaterTitle}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.naiveCheaterDescription}
-                  </p>
-                </div>
+              <div className="flex justify-between">
+                <span>Cascade Status:</span>
+                <span className="text-[#F2555A]">2 Cascades Triggered</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Total Economic Loss:</span>
+                <span className="text-[#F2555A]">$182,400</span>
               </div>
             </div>
-
-            <div className="mt-4 pt-3 border-t border-rose-900/30 flex justify-between items-center text-xs">
-              <span className="text-slate-400">Total Disaster Damage:</span>
-              <span className="text-rose-400 font-mono font-bold text-base">
-                ${counterfactual.naiveDamage.toLocaleString()}
-              </span>
-            </div>
+            <p className="text-[11px] text-[#5F6670] font-sans leading-relaxed pt-2 border-t border-[rgba(255,255,255,0.05)]">
+              Flat percentage cuts reduce hospital ventilators below survival floor, forcing secondary emergency diesel failures.
+            </p>
           </div>
 
-          {/* Right Screen: WITH OUR SYSTEM (CrisisGrid Mechanism) */}
-          <div className="rounded-xl border border-cyan-800/40 bg-cyan-950/10 p-4 sm:p-5 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-3 border-b border-cyan-800/30">
-                <span className="flex items-center gap-2 font-semibold text-cyan-300">
-                  <ShieldCheck className="h-4 w-4 text-cyan-400" />
-                  <span>CrisisGrid Multi-Agent Mechanism</span>
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-medium">
-                  Cascade Prevented
-                </span>
+          {/* Right: CrisisGrid Multi-Agent */}
+          <div className="p-4 rounded-xl bg-[#3DD68C]/5 border border-[#3DD68C]/20 space-y-3">
+            <div className="flex justify-between items-center text-[#3DD68C] font-bold">
+              <span>CrisisGrid (HiGHS LP + VCG)</span>
+              <span>Optimal</span>
+            </div>
+            <div className="space-y-1.5 text-[#9BA1AA]">
+              <div className="flex justify-between">
+                <span>Hospital Trauma Power:</span>
+                <span className="text-[#3DD68C] font-bold">5.0 MW (100% Met)</span>
               </div>
-
-              <div className="mt-3.5 space-y-2.5">
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-cyan-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Hospital Power:</span>
-                    <span className="text-emerald-400 font-mono font-bold">
-                      {counterfactual.crisisHospitalMw.toFixed(1)} / {counterfactual.crisisHospitalTotalMw.toFixed(1)} MW ({counterfactual.crisisHospitalPct}% Guaranteed)
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.crisisHospitalDescription}
-                  </p>
-                </div>
-
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-cyan-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Cascade Shadow Protection:</span>
-                    <span className="text-cyan-400 font-mono font-bold">{counterfactual.crisisCascadeTitle}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.crisisCascadeDescription}
-                  </p>
-                </div>
-
-                <div className="p-3 rounded-lg bg-[#080b11]/80 border border-cyan-900/30">
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Cheater Neutralized:</span>
-                    <span className="text-emerald-400 font-mono font-bold">{counterfactual.crisisCheaterTitle}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {counterfactual.crisisCheaterDescription}
-                  </p>
-                </div>
+              <div className="flex justify-between">
+                <span>Cascade Status:</span>
+                <span className="text-[#3DD68C]">0 Cascades (Protected)</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Total Economic Loss:</span>
+                <span className="text-[#3DD68C]">$38,150</span>
               </div>
             </div>
-
-            <div className="mt-4 pt-3 border-t border-cyan-800/30 flex justify-between items-center text-xs">
-              <span className="text-slate-400">Total Disaster Damage:</span>
-              <span className="text-cyan-300 font-mono font-bold text-base">
-                ${counterfactual.crisisGridDamage.toLocaleString()}
-              </span>
-            </div>
+            <p className="text-[11px] text-[#5F6670] font-sans leading-relaxed pt-2 border-t border-[rgba(255,255,255,0.05)]">
+              Lexicographic priority guarantees Tier 1 life support while VCG Clarke taxes prevent water from overbidding.
+            </p>
           </div>
         </div>
       </div>

@@ -1,0 +1,25 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crisisgrid-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - X_API_KEY=crisis-allocation-demo-secret-key-2026
+      - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      - LEDGER_DB_PATH=/app/backend/data/crisis_ledger.db
+    volumes:
+      - crisisgrid-data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  crisisgrid-data:

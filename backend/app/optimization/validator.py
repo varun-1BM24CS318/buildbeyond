@@ -3,7 +3,7 @@ Allocation and Invariant Validator
 ==================================
 
 Enforces system invariants with mathematical rigor:
-1. Provably safe: sum(allocations) <= supply + EPS (zero capacity violation).
+1. Mathematical invariant verified: sum(allocations) <= supply + EPS (zero capacity violation).
 2. Segment bounds: 0 <= x_ik <= cap_ik + EPS for all segments k of agent i.
 3. Demand bounds: 0 <= x_i <= D_i + EPS (cannot exceed bid or certified max).
 4. Segment sum: abs(x_i - sum(x_ik)) <= EPS.
@@ -18,8 +18,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from app.config import EPS
+from app.config import EPS, NETWORK_MODEL_ENABLED
 from app.negotiation.messages import AllocationResult, BidMessage
+from app.network.topology import NetworkTopology
 
 
 @dataclass(slots=True)
@@ -88,6 +89,7 @@ class AllocationValidator:
         expected_env_version: int,
         certified_maxes: dict[str, float] | None = None,
         minimums: dict[str, float] | None = None,
+        topology: NetworkTopology | None = None,
     ) -> ValidationResult:
         """Thoroughly checks all physical and protocol invariants.
 
@@ -121,7 +123,12 @@ class AllocationValidator:
         result_map: dict[str, AllocationResult] = {}
 
         if isinstance(allocations, dict):
-            alloc_map = dict(allocations)
+            for k, v in allocations.items():
+                if isinstance(v, AllocationResult):
+                    alloc_map[k] = v.allocated_mw
+                    result_map[k] = v
+                else:
+                    alloc_map[k] = float(v)
         else:
             for ar in allocations:
                 alloc_map[ar.agent_id] = ar.allocated_mw
@@ -198,6 +205,17 @@ class AllocationValidator:
             errors.append(
                 f"Capacity violation: total allocated {total_allocated:.6f} MW > supply {supply_mw:.6f} MW (excess {total_allocated - supply_mw:.6f})"
             )
+
+        # 4. Network Feeder Invariant: Σ_{i ∈ downstream(l)} x_i / (1 - loss_l) <= cap_l
+        if NETWORK_MODEL_ENABLED and topology is not None:
+            for feeder in topology.feeders.values():
+                downstream = sum(alloc_map.get(aid, 0.0) for aid in feeder.agents)
+                loss_scale = max(1.0 - feeder.loss_factor, EPS)
+                flow = downstream / loss_scale
+                if flow > feeder.current_capacity_mw + EPS:
+                    errors.append(
+                        f"Feeder capacity violation: feeder '{feeder.id}' load {flow:.4f} MW exceeds capacity {feeder.current_capacity_mw:.4f} MW"
+                    )
 
         slack = max(0.0, supply_mw - total_allocated)
         demand_caps = {aid: bids[aid].requested_mw for aid in bids if aid in bids}

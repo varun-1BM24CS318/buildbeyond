@@ -47,10 +47,20 @@ class ReputationAuditor:
         self.trust_floor: float = trust_floor
         self.trust_scores: dict[str, float] = {}
         self.audit_history: list[AuditRecord] = []
+        self.step_trust_snapshots: list[dict[str, Any]] = []
 
     def get_trust(self, agent_id: str) -> float:
         """Return current trust score (default 1.0 cold start)."""
         return self.trust_scores.get(agent_id, 1.0)
+
+    def get_trust_history(self, agent_id: str | None = None) -> list[dict[str, Any]]:
+        """Return step-by-step history of trust scores."""
+        if agent_id:
+            return [
+                {"step": snap["step"], "agent_id": agent_id, "trust": snap["scores"].get(agent_id, 1.0)}
+                for snap in self.step_trust_snapshots
+            ]
+        return self.step_trust_snapshots
 
     def audit_step(
         self,
@@ -95,6 +105,11 @@ class ReputationAuditor:
                     f"Audit flag for '{aid}': allocated {alloc_mw:.1f} MW but only used {used_mw:.1f} MW "
                     f"({overclaim*100:.1f}% overclaim). Trust decayed: {prior_trust:.3f} -> {clipped_trust:.3f}"
                 )
+
+        self.step_trust_snapshots.append({
+            "step": step,
+            "scores": dict(self.trust_scores),
+        })
 
         return records
 

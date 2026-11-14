@@ -18,12 +18,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.config import EPS
+from app.config import EPS, NETWORK_MODEL_ENABLED
 from app.negotiation.messages import (
     AllocationResult,
     BidMessage,
     SegmentAllocation,
 )
+from app.network.constraints import project_to_network_feasible
+from app.network.topology import NetworkTopology
 from app.optimization.explain import (
     format_solve_explanation,
     generate_segment_explanations,
@@ -69,6 +71,7 @@ class OptimizationPipeline:
         criticalities: dict[str, float],
         effective_values: dict[str, dict[str, float]] | None = None,
         weights: dict[str, float] | None = None,
+        topology: NetworkTopology | None = None,
     ) -> PipelineResult:
         """Run Stages A, B, C with fallback safety."""
         t_start = time.perf_counter()
@@ -108,7 +111,7 @@ class OptimizationPipeline:
             )
 
         # ── Stage A: Critical Protection ─────────────────────────────────────
-        res_a = solve_stage_a(bids, supply_mw, minimums, criticalities)
+        res_a = solve_stage_a(bids, supply_mw, minimums, criticalities, topology=topology)
         if not res_a.success:
             logger.warning(f"Stage A failed ({res_a.status}). Triggering fallback.")
             return self._run_fallback(bids, supply_mw, env_version, minimums, criticalities, t_start)
@@ -121,6 +124,7 @@ class OptimizationPipeline:
             stage_a_shortfall=res_a.optimal_shortfall,
             effective_values=effective_values,
             epsilon_a=self.epsilon_a,
+            topology=topology,
         )
         if not res_b.success:
             logger.warning(f"Stage B failed ({res_b.status}). Using Stage A solution.")
@@ -141,6 +145,7 @@ class OptimizationPipeline:
                 weights=weights,
                 epsilon_a=self.epsilon_a,
                 epsilon_b=self.epsilon_b,
+                topology=topology,
             )
             if not res_c.success:
                 logger.warning(f"Stage C failed ({res_c.status}). Using Stage B solution.")
@@ -161,6 +166,8 @@ class OptimizationPipeline:
         rounded_allocs = AllocationValidator.sanitize_and_round(
             alloc_dict, supply_mw=supply_mw, demand_caps=demand_caps, precision=4
         )
+        if NETWORK_MODEL_ENABLED and topology is not None:
+            rounded_allocs = project_to_network_feasible(rounded_allocs, topology)
 
         # Build output AllocationResults
         txn_id = str(uuid.uuid4())

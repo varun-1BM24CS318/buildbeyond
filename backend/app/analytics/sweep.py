@@ -23,9 +23,10 @@ import numpy as np
 
 from app.agents.honest import BaseAgent
 from app.agents.registry import AgentRegistry
-from app.config import DEFAULT_PROFILES, EPS
+from app.config import DEFAULT_PROFILES, EPS, NETWORK_MODEL_ENABLED
 from app.mechanism.vcg import VCGMechanism
 from app.negotiation.messages import AllocationResult, BidMessage, SegmentBid
+from app.network.topology import NetworkTopology
 from app.optimization.pipeline import OptimizationPipeline
 
 logger = logging.getLogger("analytics.sweep")
@@ -43,10 +44,32 @@ class SweepReport:
     sample_deviations: list[dict]
 
 
+def calculate_concave_utility(agent: BaseAgent, allocated_mw: float, d_true: float) -> float:
+    """Concave evaluation of allocated MW up to true need with strictly diminishing marginal value."""
+    rem_alloc = max(0.0, min(allocated_mw, d_true))
+    rem_need = max(0.0, d_true)
+    total_u = 0.0
+    for seg in agent.get_effective_segments():
+        seg_cap = min(seg.capacity_mw, rem_need)
+        take = min(rem_alloc, seg_cap)
+        total_u += take * seg.marginal_value
+        rem_alloc -= take
+        rem_need -= seg_cap
+        if rem_need <= EPS or rem_alloc <= EPS:
+            break
+    if allocated_mw > d_true + EPS:
+        excess = allocated_mw - d_true
+        eff_segs = agent.get_effective_segments()
+        base_val = eff_segs[-1].marginal_value if eff_segs else 50.0
+        total_u += 0.05 * excess * base_val
+    return total_u
+
+
 def run_strategyproofness_sweep(
     supply_mw: float = 60.0,
     seeds: list[int] | None = None,
     num_samples: int = 40,
+    topology: NetworkTopology | None = None,
 ) -> SweepReport:
     """Execute grid sweep of unilateral strategic misreports."""
     seeds = seeds or [42, 101]
@@ -77,6 +100,7 @@ def run_strategyproofness_sweep(
             env_version=1,
             minimums=minimums,
             criticalities=criticalities,
+            topology=topology,
         )
 
         # Baseline payments
@@ -85,14 +109,16 @@ def run_strategyproofness_sweep(
             bids=honest_bids,
             supply_mw=supply_mw,
             minimums=minimums,
+            topology=topology,
         )
 
         honest_true_utilities = {
-            aid: agents[aid].calculate_utility(honest_res.allocations[aid].allocated_mw)
+            aid: calculate_concave_utility(agents[aid], honest_res.allocations[aid].allocated_mw, agents[aid].estimate_demand({}))
             for aid in agents
         }
 
         # 2. Sweep unilateral deviations for each agent
+        agent_deviation_counts: dict[str, int] = {aid: 0 for aid in agents}
         for target_aid in agents.keys():
             target_agent = agents[target_aid]
 
@@ -143,6 +169,7 @@ def run_strategyproofness_sweep(
                         env_version=1,
                         minimums=minimums,
                         criticalities=criticalities,
+                        topology=topology,
                     )
 
                     # Compute VCG payments under misreport
@@ -151,13 +178,12 @@ def run_strategyproofness_sweep(
                         bids=misreport_bids,
                         supply_mw=supply_mw,
                         minimums=minimums,
+                        topology=topology,
                     )
 
-                    # CRITICAL: Evaluate TRUE utility gained using actual usable power min(got, D_true)!
-                    # An agent cannot consume power beyond its true need D_true; excess power has zero utility.
+                    # True utility is concave function of allocated MW up to true need
                     actual_got_mw = mis_res.allocations[target_aid].allocated_mw
-                    usable_mw = min(actual_got_mw, d_true)
-                    true_util_from_lie = target_agent.calculate_utility(usable_mw)
+                    true_util_from_lie = calculate_concave_utility(target_agent, actual_got_mw, d_true)
 
                     credits_paid = mis_payments.get(target_aid, 0.0)
                     honest_credits = honest_payments.get(target_aid, 0.0)
@@ -171,7 +197,9 @@ def run_strategyproofness_sweep(
                         best_factor = factor
                         best_scale = scale
 
-                    if len(deviations) < 8:
+                    # Record balanced sample of deviations across all agents
+                    if agent_deviation_counts[target_aid] < 2 and (factor != 1.0 or scale != 1.0 or len(deviations) < 2):
+                        agent_deviation_counts[target_aid] += 1
                         deviations.append({
                             "agent": target_aid,
                             "inflation": round(factor, 2),

@@ -9,7 +9,18 @@ import uuid
 from datetime import datetime, timezone
 
 # Valid transaction types for the ledger.
-_VALID_TXN_TYPES = frozenset({"BID", "RESERVED", "COMMITTED", "EVENT", "AUDIT"})
+_VALID_TXN_TYPES = frozenset({
+    "BID",
+    "RESERVED",
+    "COMMITTED",
+    "EVENT",
+    "AUDIT",
+    "BID_VERIFIED",
+    "BID_FLAGGED",
+    "TELEMETRY_OK",
+    "TELEMETRY_REJECTED",
+    "CHECKPOINT",
+})
 
 # Genesis hash — the prev_hash of the very first transaction.
 GENESIS_HASH: str = hashlib.sha256(b"GENESIS").hexdigest()
@@ -70,6 +81,7 @@ class Ledger:
         payload: dict,
         txn_id: str | None = None,
         status: str | None = None,
+        created_at: str | None = None,
     ) -> dict:
         """Append a transaction to the ledger and return the full row as a dict."""
         if txn_type not in _VALID_TXN_TYPES:
@@ -83,7 +95,8 @@ class Ledger:
         if status is None:
             status = "RESERVED" if txn_type == "RESERVED" else "ACTIVE"
 
-        created_at = datetime.now(timezone.utc).isoformat()
+        if created_at is None:
+            created_at = datetime.now(timezone.utc).isoformat()
 
         # Determine prev_hash from the last row (or genesis).
         cursor = self._conn.execute(
@@ -245,6 +258,104 @@ class Ledger:
         """Convenience method returning True if chain is untampered, False otherwise."""
         valid, _ = self.verify_chain()
         return valid
+
+    def get_audit_verification_report(self) -> dict:
+        """Comprehensive verification report for GET /api/audit/verify."""
+        rows = self._conn.execute(
+            "SELECT * FROM transactions ORDER BY id ASC"
+        ).fetchall()
+        length = len(rows)
+        if length == 0:
+            return {
+                "valid": True,
+                "length": 0,
+                "first_invalid_index": None,
+                "head_hash": GENESIS_HASH,
+                "genesis_hash": GENESIS_HASH,
+                "message": "Chain valid: 0 transactions",
+            }
+
+        prev_hash = GENESIS_HASH
+        first_invalid = None
+        for idx, row in enumerate(rows):
+            row_d = _row_to_dict(row)
+            txn = {
+                "txn_id": row_d["txn_id"],
+                "txn_type": row_d["txn_type"],
+                "env_version": row_d["env_version"],
+                "step": row_d["step"],
+                "agent_id": row_d["agent_id"],
+                "payload": json.loads(row_d["payload"]),
+                "prev_hash": row_d["prev_hash"],
+                "created_at": row_d["created_at"],
+            }
+            expected_hash = _compute_hash(prev_hash, txn)
+            if row_d["prev_hash"] != prev_hash or row_d["hash"] != expected_hash:
+                first_invalid = idx
+                break
+            prev_hash = row_d["hash"]
+
+        return {
+            "valid": first_invalid is None,
+            "length": length,
+            "first_invalid_index": first_invalid,
+            "head_hash": rows[-1]["hash"] if rows else GENESIS_HASH,
+            "genesis_hash": GENESIS_HASH,
+            "message": "Chain valid" if first_invalid is None else f"Tamper detected at row index {first_invalid}",
+        }
+
+    def export_all(self) -> list[dict]:
+        """Export all transactions as a list of dicts for auditing."""
+        rows = self._conn.execute("SELECT * FROM transactions ORDER BY id ASC").fetchall()
+        res = []
+        for r in rows:
+            d = _row_to_dict(r)
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except Exception:
+                pass
+            res.append(d)
+        return res
+
+    def clone_in_memory(self) -> Ledger:
+        """Create a separate in-memory copy of this ledger."""
+        clone = Ledger(":memory:")
+        rows = self._conn.execute("SELECT * FROM transactions ORDER BY id ASC").fetchall()
+        for r in rows:
+            clone._conn.execute(
+                """
+                INSERT INTO transactions (
+                    id, txn_id, txn_type, env_version, step,
+                    agent_id, payload, prev_hash, hash, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    r["id"], r["txn_id"], r["txn_type"], r["env_version"], r["step"],
+                    r["agent_id"], r["payload"], r["prev_hash"], r["hash"], r["status"], r["created_at"]
+                ),
+            )
+        clone._conn.commit()
+        return clone
+
+    def checkpoint(self, step: int, env_version: int, state_summary: dict | None = None) -> dict:
+        """Write a cryptographic checkpoint block into the hash chain."""
+        cursor = self._conn.execute("SELECT hash FROM transactions ORDER BY id DESC LIMIT 1")
+        last_row = cursor.fetchone()
+        last_h = last_row["hash"] if last_row else GENESIS_HASH
+
+        payload = {
+            "checkpoint_step": step,
+            "checkpoint_hash": last_h,
+            "total_transactions": self.count(),
+            "summary": state_summary or {},
+        }
+        return self.append(
+            txn_type="CHECKPOINT",
+            env_version=env_version,
+            step=step,
+            agent_id="SYSTEM",
+            payload=payload,
+        )
 
     # ------------------------------------------------------------------
     # Utilities

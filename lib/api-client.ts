@@ -12,7 +12,28 @@ import {
 } from "./types";
 
 const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000/ws";
+
+function resolveWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    let url = process.env.NEXT_PUBLIC_WS_URL;
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && url.startsWith("ws://")) {
+      url = "wss://" + url.slice(5);
+    }
+    return url;
+  }
+  if (process.env.NEXT_PUBLIC_BACKEND_URL) {
+    let url = process.env.NEXT_PUBLIC_BACKEND_URL.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://");
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && url.startsWith("ws://")) {
+      url = "wss://" + url.slice(5);
+    }
+    return `${url.replace(/\/+$/, "")}/ws`;
+  }
+  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    return `wss://${window.location.host}/ws`;
+  }
+  return "ws://127.0.0.1:8000/ws";
+}
+
 const API_KEY = "crisis-allocation-demo-secret-key-2026";
 
 export const INITIAL_AGENTS: Record<string, AgentStatus> = {
@@ -146,7 +167,7 @@ export const INITIAL_AGENTS: Record<string, AgentStatus> = {
 export const INITIAL_SIM_STATE: FullSimulationState = {
   step: 1,
   total_steps: 24,
-  scenario: "cyclone",
+  scenario: "normal",
   seed: 42,
   supply_mw: 35.0,
   total_demand: 35.0,
@@ -232,12 +253,16 @@ class SimulationClient {
     return this.state;
   }
 
+  private reconnectAttempts: number = 0;
+
   private initWebSocket(): void {
     try {
-      this.ws = new WebSocket(WS_BASE);
+      const wsUrl = resolveWsUrl();
+      this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.reconnectAttempts = 0;
         this.state.is_backend_connected = true;
         this.addAlert("success", "Connected to Real-Time Backend WebSocket (/ws)");
         this.ws?.send(JSON.stringify({ type: "resync" }));
@@ -276,18 +301,24 @@ class SimulationClient {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+    this.reconnectAttempts = Math.min(this.reconnectAttempts + 1, 6);
+    // Exponential backoff with jitter (1.5s base up to 25s max)
+    const delay = Math.min(25000, 1500 * Math.pow(1.5, this.reconnectAttempts) + Math.random() * 1000);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (typeof window !== "undefined") {
         this.initWebSocket();
       }
-    }, 4000);
+    }, delay);
   }
 
   private mergeBackendState(payload: any): void {
     if (!payload) return;
     if (payload.environment) {
-      this.state.step = Math.min(this.state.total_steps, payload.environment.step || this.state.step);
+      const incomingStep = Number(payload.environment.step);
+      if (!isNaN(incomingStep)) {
+        this.state.step = incomingStep <= 1 ? 1 : Math.min(this.state.total_steps, incomingStep);
+      }
       const rawSupply = payload.environment.supply_mw;
       if (rawSupply !== undefined && rawSupply !== null) {
         // Backend default scale is 80.0 MW, frontend microgrid scale is 35.0 MW.
@@ -300,30 +331,36 @@ class SimulationClient {
     if (payload.scenario) {
       this.state.scenario = payload.scenario;
     }
-    if (payload.history && Array.isArray(payload.history) && payload.history.length > 0) {
-      this.state.history = payload.history.map((h: any) => {
-        const rawHSupply = h.supply_mw ?? 35.0;
-        const scaledHSupply = rawHSupply > 35.0
-          ? Math.round((rawHSupply / 80.0) * 35.0 * 10) / 10
-          : Math.round(rawHSupply * 10) / 10;
-        const totalDem = h.demands ? Object.values(h.demands as Record<string, number>).reduce((a, b) => a + b, 0) : scaledHSupply;
-        const totalAlloc = h.allocations ? Object.values(h.allocations as Record<string, number>).reduce((a, b) => a + b, 0) : scaledHSupply;
-        return {
-          step: h.step,
-          supply_mw: scaledHSupply,
-          total_demand: Math.round(totalDem * 10) / 10,
-          total_allocated: Math.round(totalAlloc * 10) / 10,
-          shortage_mw: Math.max(0, Math.round((totalDem - scaledHSupply) * 10) / 10),
-          allocations: { ...h.allocations },
-          demands: { ...(h.demands || {}) },
-          minimums: { ...(h.minimums || {}) },
-          damages: { ...(h.damages || {}) },
-          cascade_damages: { ...(h.cascade_damages || {}) },
-          service_levels: { ...(h.service_levels || {}) },
-          solve_time_ms: h.solve_time_ms || 2.0,
-          violations: 0,
-        };
-      });
+    if (payload.history && Array.isArray(payload.history)) {
+      if (payload.history.length === 0) {
+        // Backend history cleared on reset: restore clean Step 1 baseline
+        this.state.history = [...INITIAL_SIM_STATE.history];
+        this.state.step = 1;
+      } else {
+        this.state.history = payload.history.map((h: any) => {
+          const rawHSupply = h.supply_mw ?? 35.0;
+          const scaledHSupply = rawHSupply > 35.0
+            ? Math.round((rawHSupply / 80.0) * 35.0 * 10) / 10
+            : Math.round(rawHSupply * 10) / 10;
+          const totalDem = h.demands ? Object.values(h.demands as Record<string, number>).reduce((a, b) => a + b, 0) : scaledHSupply;
+          const totalAlloc = h.allocations ? Object.values(h.allocations as Record<string, number>).reduce((a, b) => a + b, 0) : scaledHSupply;
+          return {
+            step: Math.max(1, h.step),
+            supply_mw: scaledHSupply,
+            total_demand: Math.round(totalDem * 10) / 10,
+            total_allocated: Math.round(totalAlloc * 10) / 10,
+            shortage_mw: Math.max(0, Math.round((totalDem - scaledHSupply) * 10) / 10),
+            allocations: { ...h.allocations },
+            demands: { ...(h.demands || {}) },
+            minimums: { ...(h.minimums || {}) },
+            damages: { ...(h.damages || {}) },
+            cascade_damages: { ...(h.cascade_damages || {}) },
+            service_levels: { ...(h.service_levels || {}) },
+            solve_time_ms: h.solve_time_ms || 2.0,
+            violations: 0,
+          };
+        });
+      }
     }
     this.recomputeDerivedMetrics();
     this.notify();
@@ -659,6 +696,57 @@ class SimulationClient {
     this.state.capacity_violations = 0; // Invariant check: always 0!
   }
 
+  private applyScenarioConfig(sc: string): { supply: number; agents: Record<string, AgentStatus> } {
+    const agents = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+    let supply = 35.0;
+
+    if (sc === "grid_failure") {
+      supply = 18.0;
+    } else if (sc === "cheater_under_scarcity") {
+      supply = 22.0;
+      if (agents.water) {
+        agents.water.is_cheater = true;
+        agents.water.demand = 7.2;
+        agents.water.explanation = "⚠️ CHEATER ACTIVE: Water inflating demand to 7.2 MW (+80%). Clarke pivot tax active.";
+      }
+    } else if (sc === "hospital_generator_failure") {
+      supply = 28.0;
+      if (agents.hospital) {
+        agents.hospital.demand = 8.5;
+        agents.hospital.explanation = "🚨 HOSPITAL EMERGENCY: Primary backup generator tripped. Demand surged to 8.5 MW.";
+      }
+    } else if (sc === "water_shortage") {
+      supply = 24.0;
+      if (agents.water) {
+        agents.water.demand = 6.0;
+        agents.water.explanation = "🚨 WATER CRISIS: Intake contamination surge. Demand scaled to 6.0 MW.";
+      }
+    } else if (sc === "telecom_failure") {
+      supply = 26.0;
+      if (agents.telecom) {
+        agents.telecom.demand = 4.0;
+        agents.telecom.explanation = "🚨 TELECOM OUTAGE: Transmission tower down in storm sector.";
+      }
+    } else if (sc === "recovery") {
+      supply = 33.0;
+    } else if (sc === "cyclone") {
+      supply = 24.5;
+      if (agents.emergency) {
+        agents.emergency.demand = 5.0;
+        agents.emergency.explanation = "🌀 CYCLONE LEVEL 4: Search & rescue flood mobilizations deployed across storm sector.";
+      }
+      if (agents.water) {
+        agents.water.demand = 5.5;
+        agents.water.explanation = "🌀 FLOOD CRISIS: Water drainage and stormwater pumps running at peak capacity.";
+      }
+    } else {
+      // normal baseline
+      supply = 35.0;
+    }
+
+    return { supply, agents };
+  }
+
   public async setScenario(scenario: string): Promise<void> {
     this.state.scenario = scenario;
     try {
@@ -678,35 +766,88 @@ class SimulationClient {
 
   public async reset(scenario?: string): Promise<void> {
     const sc = scenario || this.state.scenario || "normal";
+    const { supply, agents } = this.applyScenarioConfig(sc);
+
+    // Compute initial Step 1 allocations under this scenario's supply and demand
+    let remainingSupply = supply;
+    const allocs: Record<string, number> = {};
+    allocs.hospital = Math.min(agents.hospital.demand, remainingSupply >= 2.0 ? 5.0 : remainingSupply);
+    remainingSupply = Math.max(0, remainingSupply - allocs.hospital);
+    allocs.water = Math.min(agents.water.demand, remainingSupply >= 1.5 ? (agents.water.is_cheater ? 4.0 : 4.0) : remainingSupply);
+    remainingSupply = Math.max(0, remainingSupply - allocs.water);
+    allocs.emergency = Math.min(agents.emergency.demand, remainingSupply >= 1.0 ? 3.0 : remainingSupply);
+    remainingSupply = Math.max(0, remainingSupply - allocs.emergency);
+    allocs.telecom = Math.min(agents.telecom.demand, remainingSupply >= 0.8 ? 2.5 : remainingSupply);
+    remainingSupply = Math.max(0, remainingSupply - allocs.telecom);
+    allocs.residential = Math.min(agents.residential.demand, remainingSupply);
+
+    for (const aid in allocs) {
+      agents[aid].allocation = Math.round(allocs[aid] * 10) / 10;
+      agents[aid].deficit = Math.max(0, Math.round((agents[aid].demand - agents[aid].allocation) * 10) / 10);
+      agents[aid].satisfaction_ratio = agents[aid].demand > 0 ? agents[aid].allocation / agents[aid].demand : 1.0;
+      agents[aid].health_pct = Math.round(agents[aid].satisfaction_ratio * 100);
+      if (agents[aid].health_pct >= 95) agents[aid].status = "Satisfied";
+      else if (agents[aid].health_pct >= 50) agents[aid].status = "Degraded";
+      else agents[aid].status = "Critical";
+    }
+
+    const totalDemand = Object.values(agents).reduce((s: number, a: any) => s + a.demand, 0);
+    const totalAlloc = Object.values(allocs).reduce((s, v) => s + v, 0);
+    const shortageMw = Math.max(0, Math.round((totalDemand - supply) * 10) / 10);
+
+    // 1. Synchronously reset local state immediately (0ms UI feedback)
+    this.state = {
+      ...INITIAL_SIM_STATE,
+      step: 1,
+      scenario: sc,
+      is_backend_connected: this.isConnected,
+      supply_mw: Math.round(supply * 10) / 10,
+      total_demand: Math.round(totalDemand * 10) / 10,
+      total_allocated: Math.round(totalAlloc * 10) / 10,
+      shortage_mw: shortageMw,
+      agents,
+      history: [
+        {
+          step: 1,
+          supply_mw: Math.round(supply * 10) / 10,
+          total_demand: Math.round(totalDemand * 10) / 10,
+          total_allocated: Math.round(totalAlloc * 10) / 10,
+          shortage_mw: shortageMw,
+          allocations: { ...allocs },
+          demands: Object.fromEntries(Object.entries(agents).map(([k, a]: [string, any]) => [k, a.demand])),
+          minimums: { hospital: 2.0, water: 1.5, emergency: 1.0, telecom: 0.8, residential: 3.0 },
+          damages: { hospital: 0, water: 0, emergency: 0, telecom: 0, residential: 0 },
+          cascade_damages: { hospital: 0, water: 0, emergency: 0, telecom: 0, residential: 0 },
+          service_levels: Object.fromEntries(Object.entries(agents).map(([k, a]: [string, any]) => [k, a.satisfaction_ratio])),
+          solve_time_ms: 2.1,
+          violations: 0,
+        },
+      ],
+      alerts: [
+        {
+          id: `alert-scen-${Date.now()}`,
+          timestamp: new Date().toTimeString().split(" ")[0],
+          type: shortageMw > 0 ? "warning" : "info",
+          message: `Scenario '${sc}' loaded: Supply set to ${supply} MW (Shortage: ${shortageMw} MW).`,
+        },
+      ],
+    };
+    this.recomputeDerivedMetrics();
+    this.notify();
+
+    // 2. Dispatch backend reset asynchronously in background
     try {
-      await fetch(`${BACKEND_BASE}/api/simulation/reset`, {
+      fetch(`${BACKEND_BASE}/api/simulation/reset`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-API-Key": API_KEY,
         },
         body: JSON.stringify({ scenario: sc }),
-      });
+      }).catch(() => {});
     } catch {
       // ignore
     }
-
-    this.state = {
-      ...INITIAL_SIM_STATE,
-      scenario: sc,
-      is_backend_connected: this.isConnected,
-      agents: JSON.parse(JSON.stringify(INITIAL_AGENTS)),
-      history: [...INITIAL_SIM_STATE.history],
-      alerts: [
-        {
-          id: `alert-reset-${Date.now()}`,
-          timestamp: new Date().toTimeString().split(" ")[0],
-          type: "info",
-          message: `Simulation reset to scenario '${sc}'. Seed: 42.`,
-        },
-      ],
-    };
-    this.notify();
   }
 
   public async setAgentMode(agentId: string, isCheater: boolean): Promise<void> {
@@ -883,7 +1024,7 @@ class SimulationClient {
         { metric: "Total Economic Damage", proportional: "$182,400", strict_priority: "$94,200", proposed: "$38,150", oracle: "$36,900", unit: "$" },
         { metric: "Jain's Fairness Index", proportional: "0.642", strict_priority: "0.518", proposed: "0.894", oracle: "0.912", unit: "index" },
         { metric: "Cascading Failures Triggered", proportional: "3 cascades", strict_priority: "2 cascades", proposed: "0 cascades", oracle: "0 cascades", unit: "count" },
-        { metric: "Capacity Violations (Sum <= C)", proportional: "0", strict_priority: "0", proposed: "0 (Provably Safe)", oracle: "0", unit: "count" },
+        { metric: "Capacity Violations (Sum <= C)", proportional: "0", strict_priority: "0", proposed: "0 (Invariant Verified)", oracle: "0", unit: "count" },
         { metric: "Computation Time per Step", proportional: "0.4 ms", strict_priority: "0.6 ms", proposed: "1.9 ms", oracle: "12.4 ms", unit: "ms" },
       ],
       optimality_gap_pct: 3.2,
@@ -1069,3 +1210,4 @@ class SimulationClient {
 }
 
 export const simClient = new SimulationClient();
+export const apiClient = simClient;

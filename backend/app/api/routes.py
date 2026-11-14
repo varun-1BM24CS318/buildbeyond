@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.agents.registry import AgentRegistry
 from app.analytics.baselines import ProportionalBaseline, StrictPriorityBaseline
-from app.analytics.metrics import evaluate_simulation_run
+from app.analytics.metrics import calculate_optimality_gap, evaluate_simulation_run
 from app.analytics.oracle import CentralizedLPOracle
 from app.api.models import (
     AgentModeRequest,
@@ -30,11 +30,21 @@ from app.api.models import (
     StepRequest,
 )
 from app.api.ws import ws_manager
-from app.config import DEFAULT_PROFILES, Scenario
+from app.config import (
+    ADVANCED_VCG_ENABLED,
+    DEFAULT_PROFILES,
+    EventType,
+    NETWORK_MODEL_ENABLED,
+    Scenario,
+    VERIFICATION_ENABLED,
+)
 from app.director.parser_rules import parse_events_rule_based
+from app.mechanism.reputation import ReputationAuditor
+from app.mechanism.vcg import VCGMechanism
 from app.negotiation.ledger import Ledger
 from app.negotiation.messages import AllocationResult, SimulationEvent
 from app.negotiation.state_machine import NegotiationSession
+from app.network.topology import NetworkTopology
 from app.optimization.pipeline import OptimizationPipeline
 from app.security import verify_api_key
 from app.simulation.cascade import CascadeModel
@@ -42,6 +52,13 @@ from app.simulation.environment import EnvironmentState
 from app.simulation.runner import SimulationRunner
 from app.simulation.scenarios import create_scenario_events, list_available_scenarios
 from app.supabase_sync import supabase_syncer
+from app.verification.envelope import VerificationStatus, verify_bid_envelope
+from app.verification.telemetry import (
+    CrossUtilityAuditor,
+    VerificationManager,
+    sign_telemetry_packet,
+    verify_telemetry_packet,
+)
 
 logger = logging.getLogger("api.routes")
 router = APIRouter(prefix="/api")
@@ -79,6 +96,9 @@ class SimulationController:
         self.registry = AgentRegistry()
         self.cascade = CascadeModel()
         self.pipeline = OptimizationPipeline()
+        self.network = NetworkTopology()
+        self.verification_mgr = VerificationManager()
+        self.reputation_auditor = ReputationAuditor()
 
         # State tracking
         self.current_scenario: str = "cyclone"
@@ -120,6 +140,7 @@ class SimulationController:
             }
             for aid, a in self.current_allocations.items()
         }
+        alloc_mw = {aid: a.allocated_mw for aid, a in self.current_allocations.items()}
         return {
             "environment": env_snap,
             "scenario": self.current_scenario,
@@ -129,6 +150,8 @@ class SimulationController:
             "tick_interval": self.tick_interval,
             "step_count": len(self.history_records),
             "history": self.history_records,
+            "network": self.network.get_state(alloc_mw) if NETWORK_MODEL_ENABLED else None,
+            "verification": self.verification_mgr.get_status_summary() if VERIFICATION_ENABLED else None,
         }
 
     def reset(self, scenario: str = "normal", seed: int | None = None) -> None:
@@ -148,6 +171,9 @@ class SimulationController:
         self.current_allocations.clear()
         self.history_records.clear()
         self.is_running = False
+        self.network.reset_all_feeders()
+        self.verification_mgr = VerificationManager()
+        self.reputation_auditor.reset()
 
         # Load scenario events
         events = create_scenario_events(scenario)
@@ -169,6 +195,14 @@ class SimulationController:
         env_snap = self.env.get_state_snapshot()
         step = env_snap["step"]
 
+        # Handle line derate/restore events for network topology
+        if NETWORK_MODEL_ENABLED:
+            for ev in applied_events:
+                if ev.event_type == EventType.LINE_DERATE:
+                    self.network.derate_feeder(ev.target_agent or "feeder_1", ev.magnitude)
+                elif ev.event_type == EventType.LINE_RESTORE:
+                    self.network.restore_feeder(ev.target_agent or "feeder_1")
+
         # 2. Update agents
         for aid, a in self.registry.get_all().items():
             a.observe_environment(env_snap)
@@ -177,6 +211,32 @@ class SimulationController:
         minimums = {aid: a.minimum_mw for aid, a in agents.items()}
         criticalities = {aid: a.criticality for aid, a in agents.items()}
         true_demands = {aid: a.estimate_demand(env_snap) for aid, a in agents.items()}
+
+        # 2b. Pre-allocation bid envelope verification
+        if VERIFICATION_ENABLED:
+            for aid, a in agents.items():
+                b = a.generate_bid(env_version=env_snap["env_version"])
+                v_res = verify_bid_envelope(b, a._profile, env_snap)
+                t_type = "BID_VERIFIED" if v_res.status == VerificationStatus.VERIFIED else "BID_FLAGGED"
+                self.verification_mgr.record_verification(
+                    step=step,
+                    agent_id=aid,
+                    status=v_res.status.value,
+                    v_type="BID_ENVELOPE",
+                    detail="; ".join(v_res.reasons),
+                )
+                self.ledger.append(
+                    txn_type=t_type,
+                    env_version=env_snap["env_version"],
+                    step=step,
+                    agent_id=aid,
+                    payload={
+                        "status": v_res.status.value,
+                        "requested_mw": v_res.requested_mw,
+                        "certified_max_mw": v_res.certified_max_mw,
+                        "reasons": v_res.reasons,
+                    },
+                )
 
         # 3. Compute cascade shadow values for Stage B
         base_segs = {
@@ -194,6 +254,7 @@ class SimulationController:
                 minimums=minimums,
                 criticalities=criticalities,
                 effective_values=eff_vals,
+                topology=self.network if NETWORK_MODEL_ENABLED else None,
             )
             return res.allocations
 
@@ -209,9 +270,58 @@ class SimulationController:
         allocations = session.run()
         self.current_allocations = allocations
 
-        # 5. Evaluate cascade physics & damages
         alloc_mw = {aid: round(a.allocated_mw, 2) for aid, a in allocations.items()}
         rounded_demands = {aid: round(d, 2) for aid, d in true_demands.items()}
+
+        # Post-allocation: Cryptographic HMAC telemetry verification
+        if VERIFICATION_ENABLED:
+            for aid, a_mw in alloc_mw.items():
+                nonce = f"nonce-{step}-{aid}-{self.seed}"
+                pkt = sign_telemetry_packet(aid, step, a_mw, nonce)
+                ok, msg = verify_telemetry_packet(pkt, self.verification_mgr.seen_nonces, step)
+                t_type = "TELEMETRY_OK" if ok else "TELEMETRY_REJECTED"
+                self.verification_mgr.record_verification(
+                    step=step,
+                    agent_id=aid,
+                    status=VerificationStatus.VERIFIED.value if ok else VerificationStatus.REJECTED.value,
+                    v_type="TELEMETRY_HMAC",
+                    detail=msg,
+                )
+                self.ledger.append(
+                    txn_type=t_type,
+                    env_version=env_snap["env_version"],
+                    step=step,
+                    agent_id=aid,
+                    payload={"metered_mw": a_mw, "nonce": nonce, "signature": pkt.signature, "status": t_type},
+                )
+
+            # Cross-utility physical coupling check
+            discrepancies = CrossUtilityAuditor.audit_consistency(alloc_mw, rounded_demands)
+            for disc in discrepancies:
+                self.verification_mgr.record_verification(
+                    step=step,
+                    agent_id=disc["dependent_agent"],
+                    status=VerificationStatus.SUSPECT.value,
+                    v_type="CROSS_UTILITY",
+                    detail=f"Coupling anomaly: {disc['coupling']} (upstream {disc['upstream_agent']} at {disc['upstream_service_pct']}%)",
+                )
+
+        # Audit metered consumption & update reputation trust
+        self.reputation_auditor.audit_step(
+            step=step,
+            allocations=alloc_mw,
+            true_demands=true_demands,
+        )
+
+        # Periodic cryptographic checkpoint block (every 6 steps)
+        if step % 6 == 0:
+            self.ledger.checkpoint(
+                step=step,
+                env_version=env_snap["env_version"],
+                state_summary={"supply_mw": env_snap["supply_mw"], "total_allocated": sum(alloc_mw.values())},
+            )
+
+        # 5. Evaluate cascade physics & damages
         cascade_res = self.cascade.evaluate_step(
             allocations=alloc_mw,
             true_demands=true_demands,
@@ -398,11 +508,7 @@ def get_comparison(scenario: str = Query(default="cheater_under_scarcity")):
     # 2. Baseline & Proposed strategies
     for s in ["proportional", "strict_priority", "proposed"]:
         recs, met = runner.run_strategy(s, scenario=scenario, horizon_steps=8, cheater_enabled=False)
-        if oracle_metrics.cumulative_damage > 1e-4:
-            met.optimality_gap_pct = round(
-                max(0.0, (met.cumulative_damage - oracle_metrics.cumulative_damage) / oracle_metrics.cumulative_damage) * 100.0,
-                2,
-            )
+        met.optimality_gap_pct = calculate_optimality_gap(met.cumulative_damage, oracle_metrics.cumulative_damage)
         raw_results[s] = met
         strategy_step_records[s] = recs
 
@@ -427,6 +533,14 @@ def get_comparison(scenario: str = Query(default="cheater_under_scarcity")):
     metrics_rows = [
         {
             "metric": "Total Critical Shortfall",
+            "proportional": f"{raw_results['proportional'].total_critical_shortfall_mwh:.1f} MWh",
+            "strict_priority": f"{raw_results['strict_priority'].total_critical_shortfall_mwh:.1f} MWh",
+            "proposed": f"{raw_results['proposed'].total_critical_shortfall_mwh:.1f} MWh",
+            "oracle": f"{raw_results['oracle'].total_critical_shortfall_mwh:.1f} MWh",
+            "unit": "MWh",
+        },
+        {
+            "metric": "Priority-Weighted Unserved",
             "proportional": f"{raw_results['proportional'].priority_weighted_unserved:.1f} MWh",
             "strict_priority": f"{raw_results['strict_priority'].priority_weighted_unserved:.1f} MWh",
             "proposed": f"{raw_results['proposed'].priority_weighted_unserved:.1f} MWh",
@@ -461,7 +575,7 @@ def get_comparison(scenario: str = Query(default="cheater_under_scarcity")):
             "metric": "Capacity Violations (Sum <= C)",
             "proportional": str(raw_results['proportional'].capacity_violations),
             "strict_priority": str(raw_results['strict_priority'].capacity_violations),
-            "proposed": f"{raw_results['proposed'].capacity_violations} (Provably Safe)",
+            "proposed": f"{raw_results['proposed'].capacity_violations} (Invariant Verified)",
             "oracle": str(raw_results['oracle'].capacity_violations),
             "unit": "count",
         },
@@ -497,7 +611,25 @@ def get_comparison(scenario: str = Query(default="cheater_under_scarcity")):
 @router.get("/analytics/strategyproofness")
 def get_strategyproofness():
     from app.analytics.sweep import run_strategyproofness_sweep
-    report = run_strategyproofness_sweep(supply_mw=sim_ctrl.env.supply_mw, seeds=[42])
+    report = run_strategyproofness_sweep(
+        supply_mw=sim_ctrl.env.supply_mw,
+        seeds=[42],
+        topology=sim_ctrl.network if NETWORK_MODEL_ENABLED else None,
+    )
+
+    budget_report = None
+    if ADVANCED_VCG_ENABLED and sim_ctrl.current_allocations:
+        bids = {aid: a.generate_bid(sim_ctrl.env.env_version) for aid, a in sim_ctrl.registry.get_all().items()}
+        mins = {aid: a.minimum_mw for aid, a in sim_ctrl.registry.get_all().items()}
+        payments = VCGMechanism.calculate_payments(
+            sim_ctrl.current_allocations,
+            bids,
+            sim_ctrl.env.supply_mw,
+            mins,
+            topology=sim_ctrl.network if NETWORK_MODEL_ENABLED else None,
+        )
+        budget_report = VCGMechanism.analyze_budget_and_rationality(sim_ctrl.current_allocations, bids, payments)
+
     return {
         "status": "completed",
         "is_strategy_proof": report.is_strategy_proof,
@@ -506,6 +638,7 @@ def get_strategyproofness():
         "best_lying_agent": report.best_lying_agent,
         "summary": report.summary,
         "sample_deviations": report.sample_deviations,
+        "budget_and_rationality": budget_report,
     }
 
 
@@ -538,16 +671,54 @@ async def apply_director_events(req: DirectorApplyRequest):
         return {"status": "events_applied", "count": len(applied), "events": applied}
 
 
-# ── Ledger Audit Route ───────────────────────────────────────────────────────
+# ── Ledger & Audit Routes ───────────────────────────────────────────────────
 
 @router.get("/audit/verify")
 @router.get("/ledger/verify")
 def verify_ledger():
-    valid, message = sim_ctrl.ledger.verify_chain()
+    report = sim_ctrl.ledger.get_audit_verification_report()
     return {
-        "valid": valid,
-        "message": message,
-        "transaction_count": sim_ctrl.ledger.count(),
+        "valid": report["valid"],
+        "message": report["message"],
+        "transaction_count": report["length"],
+        "length": report["length"],
+        "first_invalid_index": report["first_invalid_index"],
+        "head_hash": report["head_hash"],
+        "genesis_hash": report["genesis_hash"],
+    }
+
+
+@router.get("/audit/export")
+def export_audit_ledger():
+    return {
+        "transactions": sim_ctrl.ledger.export_all(),
+        "total_count": sim_ctrl.ledger.count(),
+        "head_hash": sim_ctrl.ledger.get_latest(1)[0]["hash"] if sim_ctrl.ledger.count() > 0 else "GENESIS",
+    }
+
+
+@router.post("/audit/simulate-tamper")
+def simulate_audit_tamper(payload: dict | None = None):
+    """Simulate in-memory tampering on an isolated ledger clone without altering the real ledger."""
+    clone = sim_ctrl.ledger.clone_in_memory()
+    rows = clone._conn.execute("SELECT id FROM transactions ORDER BY id ASC").fetchall()
+    if not rows:
+        return {
+            "status": "warning",
+            "message": "Ledger is currently empty. Advance a simulation step first to generate transactions.",
+            "valid": True,
+            "real_ledger_intact": True,
+        }
+    target_id = rows[0]["id"]
+    clone._conn.execute("UPDATE transactions SET payload = '{\"tampered_data\": true}' WHERE id = ?", (target_id,))
+    clone._conn.commit()
+    report = clone.get_audit_verification_report()
+    return {
+        "status": "simulation_complete",
+        "description": f"Mutated transaction payload for ID {target_id} in isolated in-memory clone.",
+        "tamper_detected": not report["valid"],
+        "clone_verification": report,
+        "real_ledger_intact": sim_ctrl.ledger.verify_hash_chain(),
     }
 
 
@@ -567,3 +738,70 @@ def get_ledger_transactions(limit: int = 50):
             pass
         txns.append(d)
     return {"transactions": txns, "total_count": sim_ctrl.ledger.count()}
+
+
+# ── Verification Routes ─────────────────────────────────────────────────────
+
+@router.get("/verification/status")
+def get_verification_status():
+    return sim_ctrl.verification_mgr.get_status_summary()
+
+
+@router.get("/verification/history")
+def get_verification_history(agent_id: str | None = None):
+    return {"records": sim_ctrl.verification_mgr.get_agent_history(agent_id)}
+
+
+# ── Network Topology & State Routes ──────────────────────────────────────────
+
+@router.get("/network/topology")
+def get_network_topology():
+    return sim_ctrl.network.get_state()
+
+
+@router.get("/network/state")
+def get_network_state():
+    alloc_mw = {aid: a.allocated_mw for aid, a in sim_ctrl.current_allocations.items()}
+    return sim_ctrl.network.get_state(alloc_mw)
+
+
+# ── Reputation History Route ─────────────────────────────────────────────────
+
+@router.get("/reputation/history")
+def get_reputation_history(agent_id: str | None = None):
+    return {"history": sim_ctrl.reputation_auditor.get_trust_history(agent_id)}
+
+
+# ── MCP (Model Context Protocol) Endpoints ───────────────────────────────────
+
+@router.get("/mcp/tools")
+def list_mcp_tools():
+    """List all registered MCP tools available for Agentic AI execution."""
+    from app.mcp_server import MCP_TOOLS
+    return {"tools": MCP_TOOLS}
+
+
+@router.get("/mcp/resources")
+def list_mcp_resources():
+    """List all registered MCP resources."""
+    from app.mcp_server import MCP_RESOURCES
+    return {"resources": MCP_RESOURCES}
+
+
+@router.post("/mcp")
+async def handle_mcp_jsonrpc(req: dict[str, Any]):
+    """Standard JSON-RPC 2.0 endpoint for MCP clients."""
+    from app.mcp_server import handle_jsonrpc
+    return handle_jsonrpc(req)
+
+
+@router.post("/mcp/tools/{tool_name}")
+async def call_mcp_tool_direct(tool_name: str, arguments: dict[str, Any] = {}):
+    """Direct REST execution of an MCP tool."""
+    from app.mcp_server import execute_tool
+    try:
+        res = execute_tool(tool_name, arguments)
+        return {"status": "success", "result": res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

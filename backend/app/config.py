@@ -12,10 +12,19 @@ serializable configs; ``dataclasses.dataclass`` for internal-only structs.
 from __future__ import annotations
 
 import enum
+import os
 from dataclasses import dataclass, field
 from typing import Final
 
 from pydantic import BaseModel, Field
+
+# ──────────────────────────────────────────────────────────────────────
+# Feature Flags (default ON, configurable via environment)
+# ──────────────────────────────────────────────────────────────────────
+
+VERIFICATION_ENABLED: bool = os.getenv("VERIFICATION_ENABLED", "true").lower() in ("true", "1", "yes")
+NETWORK_MODEL_ENABLED: bool = os.getenv("NETWORK_MODEL_ENABLED", "true").lower() in ("true", "1", "yes")
+ADVANCED_VCG_ENABLED: bool = os.getenv("ADVANCED_VCG_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────────────────────────────────
 # Global numeric constants
@@ -84,6 +93,8 @@ class EventType(str, enum.Enum):
     TELECOM_DEGRADE = "TELECOM_DEGRADE"
     AGENT_FAIL = "AGENT_FAIL"
     AGENT_RECOVER = "AGENT_RECOVER"
+    LINE_DERATE = "LINE_DERATE"
+    LINE_RESTORE = "LINE_RESTORE"
 
 
 class NegotiationState(str, enum.Enum):

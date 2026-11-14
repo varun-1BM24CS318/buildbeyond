@@ -22,8 +22,9 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
-from app.config import EPS
+from app.config import ADVANCED_VCG_ENABLED, EPS
 from app.negotiation.messages import AllocationResult, BidMessage
+from app.network.topology import NetworkTopology
 from app.optimization.stage_b_damage import solve_stage_b
 
 logger = logging.getLogger("mechanism.vcg")
@@ -60,6 +61,7 @@ class VCGMechanism:
         supply_mw: float,
         minimums: dict[str, float],
         effective_values: dict[str, dict[str, float]] | None = None,
+        topology: NetworkTopology | None = None,
     ) -> dict[str, float]:
         """Compute virtual credit payments for all agents.
 
@@ -86,13 +88,14 @@ class VCGMechanism:
                 payments[target_i] = 0.0
                 continue
 
-            # Counterfactual Stage B solve
+            # Counterfactual Stage B solve (network-aware if enabled)
             cf_res = solve_stage_b(
                 bids=peer_bids,
                 supply_mw=supply_mw,
                 minimums=peer_mins,
                 stage_a_shortfall=0.0,
                 effective_values=effective_values,
+                topology=topology if ADVANCED_VCG_ENABLED else None,
             )
 
             w_without_i = cf_res.optimal_welfare if cf_res.success else sum(actual_welfares[j] for j in peer_bids)
@@ -104,3 +107,42 @@ class VCGMechanism:
             payments[target_i] = round(payment, 2)
 
         return payments
+
+    @classmethod
+    def analyze_budget_and_rationality(
+        cls,
+        allocations: dict[str, AllocationResult],
+        bids: dict[str, BidMessage],
+        payments: dict[str, float],
+        effective_values: dict[str, dict[str, float]] | None = None,
+    ) -> dict:
+        """Compute budget balance (revenue surplus) and individual rationality (utility >= 0)."""
+        agent_reports = {}
+        total_revenue = sum(payments.values())
+        ir_satisfied = True
+
+        for aid, alloc in allocations.items():
+            bid = bids.get(aid)
+            if not bid:
+                continue
+            eff_v = (effective_values or {}).get(aid, {})
+            val = compute_agent_welfare(alloc.allocated_mw, bid, eff_v)
+            pay = payments.get(aid, 0.0)
+            net_u = val - pay
+            is_ir = net_u >= -1e-3
+            if not is_ir:
+                ir_satisfied = False
+            agent_reports[aid] = {
+                "allocated_mw": alloc.allocated_mw,
+                "gross_valuation": round(val, 2),
+                "payment": pay,
+                "net_utility": round(net_u, 2),
+                "individually_rational": is_ir,
+            }
+
+        return {
+            "total_credit_revenue": round(total_revenue, 2),
+            "budget_balanced": total_revenue >= 0.0,
+            "all_individually_rational": ir_satisfied,
+            "agents": agent_reports,
+        }

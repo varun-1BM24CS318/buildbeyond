@@ -2,8 +2,8 @@
 
 > **Strategy-Proof, Cascade-Aware Multi-Agent Power Allocation with Provable Safety Guarantees**
 
-[![Tests](https://img.shields.io/badge/Tests-38%2F38%20Passing-brightgreen?style=for-the-badge&logo=pytest)](file:///c:/BuildBeyond/run-tests.ps1)
-[![Safety Invariant](https://img.shields.io/badge/Capacity%20Violations-0%20(Provably%20Safe)-emerald?style=for-the-badge&logo=shield)](file:///c:/BuildBeyond/backend/app/optimization/validator.py)
+[![Tests](https://img.shields.io/badge/Tests-62%2F62%20Passing-brightgreen?style=for-the-badge&logo=pytest)](file:///c:/BuildBeyond/run-tests.ps1)
+[![Safety Invariant](https://img.shields.io/badge/Capacity%20Violations-0%20(Invariant%20Verified)-emerald?style=for-the-badge&logo=shield)](file:///c:/BuildBeyond/backend/app/optimization/validator.py)
 [![Mechanism Design](https://img.shields.io/badge/Strategy--Proof-VCG%20Clarke%20Pivot-blue?style=for-the-badge)](file:///c:/BuildBeyond/backend/app/mechanism/vcg.py)
 [![Optimality Gap](https://img.shields.io/badge/Optimality%20Gap-%3C3.5%25%20vs%20LP%20Oracle-cyan?style=for-the-badge)](file:///c:/BuildBeyond/backend/app/analytics/oracle.py)
 [![Architecture](https://img.shields.io/badge/Frontend-Next.js%2016%20Command%20Center-purple?style=for-the-badge&logo=nextdotjs)](file:///c:/BuildBeyond/app/page.tsx)
@@ -18,7 +18,7 @@ During severe physical disasters (hurricanes, earthquakes, grid substation flood
 3. **Strategic Overbidding**: In uncoordinated systems, selfish actors exaggerate their needs to hoard power, leaving honest critical services starved.
 
 **Our Solution**: An autonomous multi-agent crisis resource allocation platform governed by:
-- **Provable Safety**: Exact mathematical validation ensuring `sum(allocations) <= supply` under all conditions with **0 capacity violations** (verified across 10,000 Hypothesis property checks).
+- **Safety Verification**: Exact mathematical validation ensuring `sum(allocations) <= supply` under all conditions with **0 capacity violations** (verified across 10,000 Hypothesis property checks).
 - **3-Stage Lexicographic Linear Program (SciPy HiGHS)**: Stage A guarantees survival minimums $\to$ Stage B maximizes social welfare + cascade shadow values $\to$ Stage C optimizes max-min fairness (Jain's index $> 0.89$).
 - **Interdependent Cascade Awareness (W1)**: Physical coupling model where service degradation propagates with a 1-step lag ($Water \to Hospital$, $Telecom \to Emergency$).
 - **VCG Clarke Pivot Mechanism & Ex-Post Reputation Auditor (W2)**: Dominant-strategy incentive-compatible payments where lying gains **$0.0000$ net utility** across 125 empirical sweep misreports.
@@ -37,7 +37,7 @@ Empirical evaluation under the severe `cyclone` disaster scenario over an 8-hour
 | **Total Economic & Societal Damage** | $\$182,400$ | $\$94,200$ | **$\$38,150$** | $\$36,900$ |
 | **Jain's Fairness Index** | $0.642$ | $0.518$ | **$0.894$** | $0.912$ |
 | **Cascading Failures Triggered** | $3\text{ cascades}$ | $2\text{ cascades}$ | **$0\text{ cascades}$** | $0\text{ cascades}$ |
-| **Capacity Violations ($\sum x_i \le C$)** | $0$ | $0$ | **$0\text{ (Provably Safe)}$** | $0$ |
+| **Capacity Violations ($\sum x_i \le C$)** | $0$ | $0$ | **$0\text{ (Invariant Verified)}$** | $0$ |
 | **Optimality Gap vs. Omniscient LP** | $+394\%$ damage | $+155\%$ damage | **$<3.5\%\text{ gap}$** | *Upper Bound* |
 | **Solve Time per Step** | $0.4\text{ ms}$ | $0.6\text{ ms}$ | **$1.9\text{ ms}$** | $12.4\text{ ms}$ |
 
@@ -182,16 +182,47 @@ Follow these steps to experience the complete capabilities of the system:
 
 ---
 
-## 7. Honest Claims & System Limitations
+## 7. Extended Backend Hardening & API Endpoints
 
-In adherence to scientific rigor:
-1. **Coordination Architecture**: This system is designed as **agent-based negotiation with a stateless mediator**, not leaderless Byzantine distributed consensus. The mediator computes the deterministic HiGHS LP solution and VCG Clarke pivot taxes while holding zero persistent state between rounds.
-2. **Strategy-Proofness Boundary**: Strategy-proofness is dominant-strategy incentive-compatible under quasi-linear private utilities where agents cannot consume power exceeding their true physical capacity $D_{\text{true}, i}$. Collusion between multiple agents is not modeled.
-3. **Deterministic Core**: All optimization calculations, state transitions, and audit chains are 100% deterministic mathematical code; LLMs are utilized strictly for user-facing natural language scenario parsing and never in the safety-critical optimization loop.
+The system includes four hardened backend modules sitting behind feature flags (`VERIFICATION_ENABLED`, `NETWORK_MODEL_ENABLED`, `ADVANCED_VCG_ENABLED`):
+
+### 7.1 Feature 1: Bid & Telemetry Verification (`backend/app/verification/`)
+- **Pre-Allocation Envelope Check**: Validates finite positive values, critical minimum bounds ($M_i \le x_i$), and historical disaster-severity plausibility bands before optimization.
+- **Cryptographic HMAC-SHA256 Telemetry**: Meters power consumption with unique nonce, timestamp, and signature validation, rejecting replays and forged packets.
+- **Cross-Utility Physical Coupling Auditor**: Detects physical dependency anomalies ($\kappa$) where a downstream service claims full load while an upstream prerequisite is starved.
+- **Endpoints**: `GET /api/verification/status`, `GET /api/verification/history`.
+
+### 7.2 Feature 2: Network-Aware Radial Feasibility (`backend/app/network/`)
+- **Radial Feeder Topology**: Models physical line constraints $\sum_{i \in \text{downstream}(l)} x_i / (1 - \text{loss}_l) \le \text{cap}_l(t)$.
+- **Dynamic Derating & Restoration**: Simulates line events (`LINE_DERATE`, `LINE_RESTORE`) and feeder capacity degradation under extreme weather.
+- **Hypothesis Property Verification**: 100% verified 0 line violations under arbitrary allocations via Euclidean projection.
+- **Endpoints**: `GET /api/network/topology`, `GET /api/network/state`.
+
+### 7.3 Feature 3: Reputation & Hash-Chain Ledger Hardening (`backend/app/negotiation/ledger.py`)
+- **Step-by-Step Trust History**: Tracks historical trust trajectories across crisis steps.
+- **Tamper Simulation Endpoint**: `POST /api/audit/simulate-tamper` clones the ledger in-memory and mutates payloads to demonstrate live cryptographic tamper detection without corrupting the real ledger.
+- **Ledger Export & Checkpoints**: `GET /api/audit/export` exports full transaction receipts; periodic `CHECKPOINT` blocks anchor hash state every 6 steps.
+- **Endpoints**: `GET /api/audit/verify`, `GET /api/audit/export`, `POST /api/audit/simulate-tamper`, `GET /api/reputation/history`.
+
+### 7.4 Feature 4: Advanced VCG Budget & Individual Rationality (`backend/app/mechanism/vcg.py`)
+- Analyzes budget balance, Clarke pivot externality payments under radial feeder constraints, and ensures individual rationality ($\text{Utility}(x_i) \ge \text{Utility}(0)$).
 
 ---
 
-## 8. License
+## 8. Honest Claims & Known Limitations
+
+In adherence to scientific rigor:
+1. **Coordination Architecture**: This system is designed as **agent-based negotiation with a stateless mediator**, not leaderless Byzantine distributed consensus. The mediator computes the deterministic HiGHS LP solution and VCG Clarke pivot taxes while holding zero persistent state between rounds.
+2. **Strategy-Proofness Boundary**: Strategy-proofness is dominant-strategy incentive-compatible under quasi-linear private utilities with concave diminishing marginal returns where agents cannot consume power exceeding their true physical capacity $D_{\text{true}, i}$. Collusion between multiple agents is not modeled.
+3. **Metric Definitions & Baseline Comparison**:
+   - **Critical Survival Shortfall**: Defined strictly as the unserved portion of Tier 1 life-support power ($x_i < M_i$). Under this metric, CrisisGrid achieves $0.0\text{ MWh}$ shortfall while naive baselines suffer severe blackouts.
+   - **Priority-Weighted Unserved Demand**: Defined as $\sum_{i} (D_i - x_i) \cdot w_i$. Note that greedy heuristic algorithms (like Strict Priority) allocate 100% of available power strictly to high-priority weights, which can report lower priority-weighted deficit but triggers catastrophic cascade collapse for unserved municipal water pumps and telecom relays.
+4. **Network Approximation**: The power flow model enforces radial line flow capacity with linear loss approximation ($\sum x_i / (1 - \text{loss}_l) \le \text{cap}_l$), not full non-convex AC optimal power flow (AC-OPF).
+5. **Deterministic Core**: All optimization calculations, state transitions, and audit chains are 100% deterministic mathematical code; LLMs are utilized strictly for user-facing natural language scenario parsing and never in the safety-critical optimization loop.
+
+---
+
+## 9. License
 
 Developed for the BuildBeyond Multi-Agent Crisis Resource Allocation Track.
 All rights reserved &copy; 2026.

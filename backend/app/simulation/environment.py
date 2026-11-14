@@ -39,6 +39,7 @@ class EnvironmentState:
         self.emergency_demand: float = 0.2
         self.hospital_generator_failure: bool = False
         self.telecom_degraded: bool = False
+        self.derated_feeders: dict[str, float] = {}
 
         # Versioning
         self.env_version: int = 1
@@ -108,6 +109,16 @@ class EnvironmentState:
             self.telecom_degraded = True
             self.telecom_availability = max(0.0, 1.0 - (mag / 100.0))
 
+        elif ev_type == EventType.LINE_DERATE:
+            feeder_id = event.target_agent or "feeder_1"
+            self.derated_feeders[feeder_id] = mag
+            self.severity = min(1.0, self.severity + 0.15)
+
+        elif ev_type == EventType.LINE_RESTORE:
+            feeder_id = event.target_agent or "feeder_1"
+            if feeder_id in self.derated_feeders:
+                del self.derated_feeders[feeder_id]
+
         self.applied_events.append(event)
         self.bump_version()
         return True
@@ -142,4 +153,5 @@ class EnvironmentState:
             "emergency_demand": round(self.emergency_demand, 4),
             "hospital_generator_failure": self.hospital_generator_failure,
             "telecom_degraded": self.telecom_degraded,
+            "derated_feeders": dict(self.derated_feeders),
         }

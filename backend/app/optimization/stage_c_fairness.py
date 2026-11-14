@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import linprog
 
-from app.config import EPS, SOLVER_TIME_LIMIT
+from app.config import EPS, NETWORK_MODEL_ENABLED, SOLVER_TIME_LIMIT
 from app.negotiation.messages import BidMessage
+from app.network.constraints import build_network_line_constraints
+from app.network.topology import NetworkTopology
 
 
 @dataclass(slots=True)
@@ -69,6 +71,7 @@ def solve_stage_c(
     weights: dict[str, float] | None = None,
     epsilon_a: float = 1e-4,
     epsilon_b: float = 1e-3,
+    topology: NetworkTopology | None = None,
 ) -> StageCResult:
     """Solve Stage C LP maximizing fairness ratio λ subject to Stage A & B tolerances."""
     t0 = time.perf_counter()
@@ -163,6 +166,12 @@ def solve_stage_c(
             fair_row[lambda_idx] = w_i * d_i
             A_ub_list.append(fair_row)
             b_ub_list.append(0.0)
+
+    # 7. Network feeder thermal limits
+    if NETWORK_MODEL_ENABLED and topology is not None:
+        net_A, net_b, _ = build_network_line_constraints(agent_seg_indices, n_vars, topology)
+        A_ub_list.extend(net_A)
+        b_ub_list.extend(net_b)
 
     A_ub = np.array(A_ub_list)
     b_ub = np.array(b_ub_list)

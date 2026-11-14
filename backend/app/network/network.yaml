@@ -1,0 +1,26 @@
+version: 1.0
+substation:
+  id: "substation_alpha"
+  name: "Substation Alpha Central"
+  transformer_capacity_mw: 90.0
+feeders:
+  - id: "feeder_1"
+    name: "North Critical Infrastructure Feeder"
+    capacity_mw: 45.0
+    loss_factor: 0.02
+    agents:
+      - "hospital"
+      - "water"
+  - id: "feeder_2"
+    name: "Central Emergency & Comms Feeder"
+    capacity_mw: 30.0
+    loss_factor: 0.015
+    agents:
+      - "emergency"
+      - "telecom"
+  - id: "feeder_3"
+    name: "South Residential Metro Feeder"
+    capacity_mw: 35.0
+    loss_factor: 0.03
+    agents:
+      - "residential"

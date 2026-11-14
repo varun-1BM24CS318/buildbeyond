@@ -161,6 +161,30 @@ def create_scenario_events(scenario: Scenario | str) -> list[SimulationEvent]:
             ),
         ]
 
+    elif scen_str in ("feeder_derate", "line_derate"):
+        return [
+            SimulationEvent(
+                event_type=EventType.SUPPLY_DROP,
+                step=2,
+                magnitude=20.0,
+                description="Storm causes initial 20% grid supply loss",
+            ),
+            SimulationEvent(
+                event_type=EventType.LINE_DERATE,
+                step=3,
+                magnitude=18.0,
+                target_agent="feeder_1",
+                description="North feeder thermal overload from flooding: capacity derated to 18.0 MW",
+            ),
+            SimulationEvent(
+                event_type=EventType.LINE_RESTORE,
+                step=7,
+                magnitude=45.0,
+                target_agent="feeder_1",
+                description="Emergency line crew clears vegetation: North feeder capacity fully restored",
+            ),
+        ]
+
     elif scen_str in ("cheater_under_scarcity", "cheater"):
         # The headline demo scenario
         return [
@@ -187,4 +211,5 @@ def list_available_scenarios() -> list[dict[str, str]]:
         {"id": "telecom_failure", "name": "Telecom Trunk Cut", "description": "Major communications blackout."},
         {"id": "recovery", "name": "Black Start & Recovery", "description": "Deep outage followed by two-stage phased restoration."},
         {"id": "cheater_under_scarcity", "name": "Cheater Under Scarcity (Demo)", "description": "Scarcity conditions highlighting strategic lying vs VCG defense."},
+        {"id": "feeder_derate", "name": "Feeder Derate & Line Congestion", "description": "Thermal line constraint restricts North feeder during storm, testing radial feasibility."},
     ]

@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+.next
+.pytest_cache
+.hypothesis
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.db-wal
+*.db-shm
+.env*
+!.env.example

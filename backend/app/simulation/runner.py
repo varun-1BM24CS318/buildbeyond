@@ -17,11 +17,16 @@ from typing import Any
 
 from app.agents.registry import AgentRegistry
 from app.analytics.baselines import ProportionalBaseline, StrictPriorityBaseline
-from app.analytics.metrics import SimulationMetrics, evaluate_simulation_run
+from app.analytics.metrics import (
+    SimulationMetrics,
+    calculate_optimality_gap,
+    evaluate_simulation_run,
+)
 from app.analytics.oracle import CentralizedLPOracle
-from app.config import DEFAULT_PROFILES, EPS, Scenario
+from app.config import DEFAULT_PROFILES, EPS, EventType, NETWORK_MODEL_ENABLED, Scenario
 from app.negotiation.ledger import Ledger
 from app.negotiation.state_machine import NegotiationSession
+from app.network.topology import NetworkTopology
 from app.optimization.pipeline import OptimizationPipeline
 from app.simulation.cascade import CascadeModel
 from app.simulation.environment import EnvironmentState
@@ -48,6 +53,7 @@ class SimulationRunner:
         ledger = Ledger(":memory:")
         cascade = CascadeModel()
         registry = AgentRegistry()
+        network = NetworkTopology()
 
         # Schedule scenario events
         events = create_scenario_events(scenario)
@@ -63,6 +69,13 @@ class SimulationRunner:
             # Advance environment step & drain events
             applied_events = env.step_environment()
             env_snap = env.get_state_snapshot()
+
+            if NETWORK_MODEL_ENABLED:
+                for ev in applied_events:
+                    if ev.event_type == EventType.LINE_DERATE:
+                        network.derate_feeder(ev.target_agent or "feeder_1", ev.magnitude)
+                    elif ev.event_type == EventType.LINE_RESTORE:
+                        network.restore_feeder(ev.target_agent or "feeder_1")
 
             # Update agents with observations
             for aid, agent in registry.get_all().items():
@@ -90,11 +103,15 @@ class SimulationRunner:
             allocations_mw: dict[str, float] = {}
 
             if strategy_name.lower() == "proportional":
-                prop_res = ProportionalBaseline.allocate(bids, env.supply_mw, env.env_version)
+                prop_res = ProportionalBaseline.allocate(
+                    bids, env.supply_mw, env.env_version, topology=network if NETWORK_MODEL_ENABLED else None
+                )
                 allocations_mw = {aid: r.allocated_mw for aid, r in prop_res.items()}
 
             elif strategy_name.lower() in ("priority", "strict_priority"):
-                prio_res = StrictPriorityBaseline.allocate(bids, env.supply_mw, env.env_version, criticalities)
+                prio_res = StrictPriorityBaseline.allocate(
+                    bids, env.supply_mw, env.env_version, criticalities, topology=network if NETWORK_MODEL_ENABLED else None
+                )
                 allocations_mw = {aid: r.allocated_mw for aid, r in prio_res.items()}
 
             elif strategy_name.lower() == "oracle":
@@ -120,7 +137,7 @@ class SimulationRunner:
                 }
                 eff_vals = cascade.compute_cascade_shadow_values(base_segs, criticalities)
 
-                # Optimizer function incorporating cascade shadow values
+                # Optimizer function incorporating cascade shadow values and network topology
                 def cascade_lp_optimizer(bids, supply_mw, env_version, agents):
                     res = pipeline.solve(
                         bids=bids,
@@ -129,6 +146,7 @@ class SimulationRunner:
                         minimums=minimums,
                         criticalities=criticalities,
                         effective_values=eff_vals,
+                        topology=network if NETWORK_MODEL_ENABLED else None,
                     )
                     return res.allocations
 
@@ -186,11 +204,9 @@ class SimulationRunner:
         for strat in ["proportional", "strict_priority", "proposed"]:
             _, met = self.run_strategy(strat, scenario, horizon_steps, cheater_enabled=cheater_enabled)
             # Compute optimality gap vs oracle
-            if oracle_metrics.cumulative_damage > EPS:
-                met.optimality_gap_pct = round(
-                    max(0.0, (met.cumulative_damage - oracle_metrics.cumulative_damage) / oracle_metrics.cumulative_damage) * 100.0,
-                    2,
-                )
+            met.optimality_gap_pct = calculate_optimality_gap(
+                met.cumulative_damage, oracle_metrics.cumulative_damage
+            )
             results[strat] = met
 
         return results
