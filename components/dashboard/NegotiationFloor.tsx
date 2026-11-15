@@ -347,7 +347,7 @@ function playbackReducer(state: PlaybackState, action: PlaybackAction): Playback
 // Main Component
 // =====================================================================
 
-export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
+export const NegotiationFloor: React.FC<NegotiationFloorProps> = React.memo(({
   state,
   onToggleCheater,
   isPlaying: globalPlaying,
@@ -1324,4 +1324,4 @@ export const NegotiationFloor: React.FC<NegotiationFloorProps> = ({
       </div>
     </div>
   );
-};
+});

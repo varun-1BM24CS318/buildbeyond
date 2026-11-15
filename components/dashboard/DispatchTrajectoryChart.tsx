@@ -59,7 +59,7 @@ const SCENARIO_EVENTS: Record<string, { step: number; label: string; detail: str
   ],
 };
 
-export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = ({
+export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = React.memo(({
   state,
   onSeekStep,
 }) => {
@@ -872,7 +872,7 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
       </div>
     </div>
   );
-};
+});
 
 function sumAllocs(obj: Record<string, number>): number {
   return Object.values(obj).reduce((acc, v) => acc + (v || 0), 0);

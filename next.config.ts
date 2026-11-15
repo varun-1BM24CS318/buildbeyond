@@ -6,8 +6,11 @@ const backendUrl =
   "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
+  compress: true,
+  poweredByHeader: false,
   experimental: {
     agentFeedback: true,
+    optimizePackageImports: ["lucide-react", "recharts", "@google/genai"],
   },
   cacheComponents: true,
   partialPrefetching: true,

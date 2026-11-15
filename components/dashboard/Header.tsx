@@ -58,7 +58,7 @@ const TABS = [
   { id: "director", label: "Director" },
 ];
 
-export const Header: React.FC<HeaderProps> = ({
+export const Header: React.FC<HeaderProps> = React.memo(({
   state,
   activeTab,
   setActiveTab,
@@ -259,4 +259,4 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
     </header>
   );
-};
+});

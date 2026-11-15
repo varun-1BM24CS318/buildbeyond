@@ -22,7 +22,7 @@ interface CommandCenterTabProps {
   onToggleCheater: (agentId: string, isCheater: boolean) => void;
 }
 
-export const CommandCenterTab: React.FC<CommandCenterTabProps> = ({
+export const CommandCenterTab: React.FC<CommandCenterTabProps> = React.memo(({
   state,
   onToggleCheater,
 }) => {
@@ -296,4 +296,4 @@ export const CommandCenterTab: React.FC<CommandCenterTabProps> = ({
       </div>
     </div>
   );
-};
+});
