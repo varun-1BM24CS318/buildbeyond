@@ -42,7 +42,7 @@ const SCENARIO_EVENTS: Record<string, { step: number; label: string; detail: str
   cyclone: [
     { step: 1, label: "Surge +30%", detail: "Storm warning: Emergency response mobilization", type: "surge" },
     { step: 2, label: "Corridor −30%", detail: "High winds damage transmission corridor", type: "supply" },
-    { step: 3, label: "Transformer −15%", detail: "Debris trips secondary substation transformer", type: "supply" },
+    { step: 3, label: "Substation −15%", detail: "Debris trips secondary substation transformer", type: "supply" },
     { step: 4, label: "Water −40%", detail: "Intake contaminated by storm surge", type: "water" },
   ],
   grid_failure: [
@@ -427,13 +427,14 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
               );
             })}
 
-            {/* Scenario Event Shock Markers & Flags (Staggered across 3 lanes to avoid overlap) */}
+            {/* Scenario Event Shock Markers & Flags (Balanced across 2 alternating tiers to prevent overlap and header bleed) */}
             {scenarioEvents.map((ev, idx) => {
               const evX = paddingLeft + (ev.step - 0.5) * slotWidth;
               const isPastOrCurrent = ev.step <= currentStep;
-              const lane = idx % 3; // Stagger across 3 vertical lanes
-              const flagY = paddingTop - 12 - lane * 18;
-              const truncated = ev.label.length > 13 ? ev.label.slice(0, 11) + "…" : ev.label;
+              const tier = idx % 2; // Clean 2-tier alternation (lower tier: idx 0, 2; upper tier: idx 1, 3)
+              const flagY = tier === 0 ? paddingTop - 13 : paddingTop - 31;
+              const displayLabel = ev.label.length > 15 ? ev.label.slice(0, 13) + "…" : ev.label;
+              const boxWidth = Math.max(54, Math.min(68, displayLabel.length * 5.2 + 10));
 
               return (
                 <g key={idx} className="transition-opacity duration-200">
@@ -452,27 +453,34 @@ export const DispatchTrajectoryChart: React.FC<DispatchTrajectoryChartProps> = (
                     transform={`translate(${evX}, ${flagY})`}
                     className="cursor-pointer"
                   >
-                    <title>{`${ev.label} (Shock at Step ${ev.step})`}</title>
+                    <title>{`${ev.label} (Shock at Step ${ev.step}): ${ev.detail}`}</title>
                     <rect
-                      x="-38"
-                      y="-9"
-                      width="76"
+                      x={-boxWidth / 2}
+                      y="-8"
+                      width={boxWidth}
                       height="16"
                       rx="3"
-                      fill="#14171B"
+                      fill="#0E1013"
                       stroke="#F5A524"
                       strokeWidth="1"
-                      strokeOpacity="0.4"
+                      strokeOpacity="0.5"
+                    />
+                    {/* Small anchor pin pointing down to guideline */}
+                    <polygon
+                      points="-3,8 3,8 0,11"
+                      fill="#F5A524"
+                      opacity={isPastOrCurrent ? 0.7 : 0.3}
                     />
                     <text
                       x="0"
-                      y="3"
+                      y="3.5"
                       textAnchor="middle"
                       fill="#F5A524"
-                      fontSize="9"
+                      fontSize="8.5"
                       fontWeight="600"
+                      className="font-mono"
                     >
-                      {truncated}
+                      {displayLabel}
                     </text>
                   </g>
                 </g>
